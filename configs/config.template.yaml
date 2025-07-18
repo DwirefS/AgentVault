@@ -1,0 +1,199 @@
+# AgentVault™ Configuration Template
+# Author: Dwiref Sharma
+# Contact: DwirefS@SapientEdge.io
+
+version: "1.0"
+environment: ${AGENTVAULT_ENV}
+
+# Azure Configuration
+azure:
+  subscription_id: ${AZURE_SUBSCRIPTION_ID}
+  resource_group: ${AZURE_RESOURCE_GROUP}
+  location: ${AZURE_LOCATION}
+  tenant_id: ${AZURE_TENANT_ID}
+  client_id: ${AZURE_CLIENT_ID}
+  # Client secret should be stored securely
+  client_secret: ${AZURE_CLIENT_SECRET}
+
+# Azure NetApp Files Configuration
+anf:
+  account_name: ${ANF_ACCOUNT_NAME}
+  pool_name_prefix: ${ANF_POOL_PREFIX}
+  volume_name_prefix: ${ANF_VOLUME_PREFIX}
+  subnet_id: ${ANF_SUBNET_ID}
+  default_size_gb: 100
+  mount_path: /mnt/agentvault
+  
+  # Service levels configuration
+  service_levels:
+    ultra:
+      enabled: true
+      min_size_gb: 100
+      max_size_gb: 100000
+    premium:
+      enabled: true
+      min_size_gb: 100
+      max_size_gb: 100000
+    standard:
+      enabled: true
+      min_size_gb: 100
+      max_size_gb: 500000
+
+# Redis Cache Configuration
+redis:
+  url: ${REDIS_URL}
+  ssl_enabled: true
+  password: ${REDIS_PASSWORD}
+  max_connections: 100
+  key_prefix: "agentvault:"
+  ttl_seconds: 3600
+  
+  # Cache policies
+  policies:
+    memory_max: "4gb"
+    eviction_policy: "allkeys-lru"
+    
+# Storage Configuration
+storage:
+  default_tier: "premium"
+  compression_enabled: true
+  encryption_enabled: true
+  deduplication_enabled: true
+  auto_tiering_enabled: true
+  
+  # Retention policies (days)
+  retention_days:
+    ultra: 7
+    premium: 30
+    standard: 90
+    cool: 365
+    archive: 2555
+    
+  # Tiering thresholds
+  tiering_thresholds:
+    access_count_threshold: 10
+    age_threshold_hours: 24
+    size_threshold_mb: 100
+
+# Machine Learning Configuration
+ml:
+  dna_profiling_enabled: true
+  cognitive_balancing_enabled: true
+  model_update_interval: 3600
+  training_batch_size: 1000
+  feature_dimensions: 128
+  
+  # Model parameters
+  models:
+    access_prediction:
+      algorithm: "lstm"
+      hidden_units: 64
+      learning_rate: 0.001
+    tier_optimization:
+      algorithm: "gradient_boost"
+      n_estimators: 100
+      max_depth: 10
+
+# Security Configuration
+security:
+  encryption_algorithm: "AES256-GCM"
+  key_rotation_days: 90
+  audit_logging_enabled: true
+  compliance_mode: "SOC2,HIPAA,GDPR"
+  zero_trust_enabled: true
+  
+  # Key Vault settings
+  key_vault:
+    name: ${KEY_VAULT_NAME}
+    key_name: "agentvault-master-key"
+    
+  # Access control
+  rbac:
+    enabled: true
+    provider: "azure_ad"
+
+# API Configuration
+api:
+  host: "0.0.0.0"
+  port: 8000
+  workers: 4
+  cors_enabled: true
+  rate_limit_enabled: true
+  max_requests_per_minute: 1000
+  
+  # Authentication
+  auth:
+    enabled: true
+    provider: "oauth2"
+    issuer: ${AUTH_ISSUER}
+    
+  # API keys (for development)
+  api_keys:
+    enabled: false
+    keys: []
+
+# Monitoring Configuration
+monitoring:
+  prometheus_enabled: true
+  prometheus_port: 9090
+  metrics_interval: 30
+  alert_webhook: ${ALERT_WEBHOOK_URL}
+  log_level: ${LOG_LEVEL}
+  
+  # Logging
+  logging:
+    format: "json"
+    output: "stdout"
+    file_enabled: true
+    file_path: "/var/log/agentvault/agentvault.log"
+    max_size_mb: 100
+    retention_days: 30
+    
+  # Alerts
+  alerts:
+    enabled: true
+    channels:
+      - type: "webhook"
+        url: ${ALERT_WEBHOOK_URL}
+      - type: "email"
+        recipients: ["ops@example.com"]
+
+# Agent Framework Configuration
+frameworks:
+  langchain:
+    enabled: true
+    memory_backend: "agentvault"
+    vectorstore_backend: "agentvault"
+    embeddings_model: "text-embedding-ada-002"
+    
+  autogen:
+    enabled: true
+    cache_backend: "agentvault"
+    conversation_backend: "agentvault"
+    max_cache_size_mb: 1000
+    
+  crewai:
+    enabled: true
+    memory_backend: "agentvault"
+    task_storage: "agentvault"
+
+# Performance Tuning
+performance:
+  connection_pool_size: 50
+  request_timeout_seconds: 30
+  batch_size: 100
+  prefetch_enabled: true
+  prefetch_size: 10
+  
+  # Thread pool settings
+  thread_pool:
+    min_threads: 10
+    max_threads: 100
+    queue_size: 1000
+
+# Development Settings
+development:
+  debug_enabled: false
+  profiling_enabled: false
+  mock_azure_services: false
+  local_storage_path: "/tmp/agentvault"

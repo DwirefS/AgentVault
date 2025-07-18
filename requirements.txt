@@ -1,0 +1,96 @@
+# AgentVault™ - Enterprise AI Agent Storage Platform
+# Core Dependencies
+
+# Azure SDK and NetApp Files
+azure-mgmt-netapp>=10.1.0
+azure-mgmt-resource>=23.0.0
+azure-identity>=1.15.0
+azure-storage-file-datalake>=12.14.0
+azure-keyvault-secrets>=4.7.0
+azure-monitor-opentelemetry>=1.2.0
+
+# AI Agent Frameworks
+autogen-agentchat>=0.2.0
+langchain>=0.1.0
+langchain-community>=0.0.20
+langchain-openai>=0.0.8
+crewai>=0.28.0
+semantic-kernel>=0.9.0
+
+# Vector Databases and Search
+chromadb>=0.4.0
+faiss-cpu>=1.7.4
+weaviate-client>=3.25.0
+azure-search-documents>=11.4.0
+pinecone-client>=3.0.0
+
+# High-Performance Storage and Caching
+redis[hiredis]>=5.0.0
+redis-py-cluster>=2.1.0
+pymongo>=4.6.0
+psycopg2-binary>=2.9.0
+sqlalchemy>=2.0.0
+aioredis>=2.0.0
+
+# Networking and Communication
+aiohttp>=3.9.0
+httpx>=0.26.0
+websockets>=12.0
+grpcio>=1.60.0
+grpcio-tools>=1.60.0
+
+# Data Processing and ML
+numpy>=1.24.0
+pandas>=2.0.0
+scikit-learn>=1.4.0
+torch>=2.1.0
+transformers>=4.36.0
+sentence-transformers>=2.2.0
+openai>=1.6.0
+
+# Monitoring and Observability
+prometheus-client>=0.19.0
+opentelemetry-api>=1.21.0
+opentelemetry-sdk>=1.21.0
+opentelemetry-instrumentation>=0.42b0
+loguru>=0.7.0
+structlog>=23.2.0
+
+# Security and Encryption
+cryptography>=41.0.0
+pyjwt>=2.8.0
+python-jose[cryptography]>=3.3.0
+msal>=1.26.0
+
+# Configuration and Environment
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+python-dotenv>=1.0.0
+pyyaml>=6.0.0
+toml>=0.10.0
+
+# API and Web Framework
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+starlette>=0.27.0
+
+# Testing and Development
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+pytest-cov>=4.1.0
+pytest-mock>=3.12.0
+black>=23.11.0
+isort>=5.12.0
+mypy>=1.7.0
+pre-commit>=3.6.0
+
+# Cloud Infrastructure
+terraform-runner>=0.1.0
+azure-cli>=2.56.0
+
+# Utilities
+click>=8.1.0
+rich>=13.7.0
+typer>=0.9.0
+tqdm>=4.66.0
+schedule>=1.2.0
