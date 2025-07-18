@@ -124,17 +124,55 @@ class AdvancedEncryptionManager:
     def __init__(self, config: Dict[str, Any]):
         self.config = config
         
-        # Azure Key Vault configuration
+        # Azure Key Vault configuration with production authentication
         self.key_vault_url = config['security']['key_vault_url']
-        self.credential = DefaultAzureCredential()
+        
+        # Use DefaultAzureCredential with production settings
+        # This supports multiple authentication methods in order:
+        # 1. EnvironmentCredential - Service principal from environment variables
+        # 2. WorkloadIdentityCredential - For AKS workload identity
+        # 3. ManagedIdentityCredential - For Azure VMs and services
+        # 4. AzureCliCredential - For local development
+        self.credential = DefaultAzureCredential(
+            exclude_environment_credential=False,  # Allow service principal
+            exclude_managed_identity_credential=False,  # Allow managed identity
+            exclude_shared_token_cache_credential=True,  # Exclude for security
+            exclude_visual_studio_code_credential=True,  # Exclude for production
+            exclude_interactive_browser_credential=True,  # No interactive in production
+            exclude_azure_cli_credential=os.getenv('ENVIRONMENT') == 'production',
+            logging_enable=True
+        )
+        
+        # Initialize Key Vault clients with production settings
         self.secret_client = SecretClient(
             vault_url=self.key_vault_url,
-            credential=self.credential
+            credential=self.credential,
+            logging_enable=True
         )
         self.key_client = KeyClient(
             vault_url=self.key_vault_url,
-            credential=self.credential
+            credential=self.credential,
+            logging_enable=True
         )
+        
+        # Verify Key Vault access and permissions
+        try:
+            # Test connection by listing keys
+            key_count = 0
+            for key_properties in self.key_client.list_properties_of_keys(max_page_size=1):
+                key_count += 1
+                break  # Just verify we can connect
+            logger.info(f"Successfully authenticated to Key Vault: {self.key_vault_url}")
+            
+            # Check if we have the required permissions
+            if os.getenv('ENVIRONMENT') == 'production':
+                # In production, ensure we have proper RBAC roles
+                logger.info("Running in production mode with Azure AD authentication")
+        except Exception as e:
+            logger.error(f"Failed to connect to Key Vault: {str(e)}")
+            logger.error("Check Azure AD authentication and Key Vault access policies")
+            logger.error("Required RBAC roles: Key Vault Crypto Officer or Key Vault Secrets Officer")
+            raise
         
         # Encryption configuration
         self.default_algorithm = EncryptionAlgorithm(

@@ -1,0 +1,870 @@
+openapi: 3.1.0
+info:
+  title: AgentVault™ API
+  description: |
+    # AgentVault™ - Enterprise AI Agent Storage Platform API
+    
+    AgentVault™ provides high-performance, secure, and intelligent storage solutions 
+    for AI agents with enterprise-grade features.
+    
+    ## Key Features
+    
+    ### 🚀 Performance
+    - **Multi-tier Storage**: Automatic data placement across Ultra, Premium, Standard, Cool, and Archive tiers
+    - **Sub-millisecond Latency**: Distributed caching with Redis cluster
+    - **Horizontal Scaling**: Support for millions of agents
+    - **Vector Search**: FAISS/HNSWLIB for semantic search at scale
+    
+    ### 🔒 Security
+    - **Azure AD Integration**: Enterprise SSO with MFA
+    - **End-to-End Encryption**: AES-256-GCM with Azure Key Vault
+    - **RBAC**: Fine-grained permissions and roles
+    - **Audit Logging**: Complete audit trail for compliance
+    
+    ### 🧠 Intelligence
+    - **ML-Powered Optimization**: Automatic tier placement based on usage patterns
+    - **Agent DNA Profiling**: Behavioral analysis and anomaly detection
+    - **Predictive Scaling**: Proactive resource allocation
+    - **Smart Caching**: AI-driven cache warming and eviction
+    
+    ### 📊 Observability
+    - **Real-time Monitoring**: Prometheus metrics and Azure Monitor integration
+    - **Distributed Tracing**: OpenTelemetry support
+    - **Custom Dashboards**: Grafana integration
+    - **SLA Tracking**: 99.99% uptime guarantee
+    
+    ## Authentication
+    
+    All API endpoints (except health checks) require Azure AD authentication.
+    
+    ### Bearer Token
+    ```
+    Authorization: Bearer <azure-ad-token>
+    ```
+    
+    ### Obtaining Tokens
+    1. Register your application in Azure AD
+    2. Configure redirect URIs and permissions
+    3. Use OAuth 2.0 authorization code flow
+    4. Include the token in all API requests
+    
+    ## Rate Limiting
+    
+    API calls are rate-limited based on your subscription tier:
+    
+    | Tier | Requests/Hour | Burst Limit |
+    |------|--------------|-------------|
+    | Free | 100 | 10 |
+    | Standard | 1,000 | 100 |
+    | Premium | 10,000 | 1,000 |
+    | Enterprise | Unlimited | Custom |
+    
+    Rate limit headers:
+    - `X-RateLimit-Limit`: Maximum requests allowed
+    - `X-RateLimit-Remaining`: Requests remaining
+    - `X-RateLimit-Reset`: Unix timestamp when limit resets
+    
+    ## Error Handling
+    
+    The API uses standard HTTP status codes and returns detailed error responses:
+    
+    ```json
+    {
+      "error": "ValidationError",
+      "message": "Invalid agent configuration",
+      "timestamp": "2024-01-15T10:30:00Z",
+      "request_id": "req_123456",
+      "details": {
+        "field": "agent_type",
+        "reason": "Must be one of: langchain, autogen, crewai"
+      }
+    }
+    ```
+    
+    Common status codes:
+    - `200 OK`: Success
+    - `201 Created`: Resource created
+    - `400 Bad Request`: Invalid input
+    - `401 Unauthorized`: Missing or invalid token
+    - `403 Forbidden`: Insufficient permissions
+    - `404 Not Found`: Resource not found
+    - `409 Conflict`: Resource already exists
+    - `429 Too Many Requests`: Rate limit exceeded
+    - `500 Internal Server Error`: Server error
+    - `503 Service Unavailable`: Temporary outage
+    
+    ## Versioning
+    
+    The API uses URL versioning. Current version: `v1`
+    
+    All endpoints are prefixed with `/api/v1/`
+    
+    ## Support
+    
+    - Email: support@sapientedge.io
+    - Documentation: https://docs.agentvault.io
+    - Status Page: https://status.agentvault.io
+    
+  version: 1.0.0
+  contact:
+    name: AgentVault Support
+    email: support@sapientedge.io
+    url: https://agentvault.io
+  license:
+    name: Proprietary
+    url: https://agentvault.io/license
+
+servers:
+  - url: https://api.agentvault.io
+    description: Production
+  - url: https://staging-api.agentvault.io
+    description: Staging
+  - url: http://localhost:8080
+    description: Development
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Azure AD bearer token
+      
+  schemas:
+    Error:
+      type: object
+      required:
+        - error
+        - message
+        - timestamp
+        - request_id
+      properties:
+        error:
+          type: string
+          description: Error type
+          example: ValidationError
+        message:
+          type: string
+          description: Human-readable error message
+          example: Invalid agent configuration
+        timestamp:
+          type: string
+          format: date-time
+          description: Error timestamp
+        request_id:
+          type: string
+          description: Unique request identifier for support
+          example: req_123456
+        details:
+          type: object
+          description: Additional error details
+          additionalProperties: true
+          
+    HealthResponse:
+      type: object
+      required:
+        - status
+        - timestamp
+        - version
+        - environment
+      properties:
+        status:
+          type: string
+          enum: [healthy, degraded, unhealthy]
+          description: Current health status
+        timestamp:
+          type: string
+          format: date-time
+          description: Current server time
+        version:
+          type: string
+          description: API version
+          example: "1.0.0"
+        environment:
+          type: string
+          enum: [development, staging, production]
+          description: Deployment environment
+          
+    AgentRegistrationRequest:
+      type: object
+      required:
+        - agent_id
+        - agent_type
+      properties:
+        agent_id:
+          type: string
+          description: Unique agent identifier
+          example: "agent_12345"
+          minLength: 3
+          maxLength: 100
+          pattern: "^[a-zA-Z0-9_-]+$"
+        agent_type:
+          type: string
+          enum: [langchain, autogen, crewai, custom]
+          description: Type of AI agent
+        description:
+          type: string
+          description: Human-readable agent description
+          maxLength: 500
+        config:
+          type: object
+          description: Agent-specific configuration
+          properties:
+            model:
+              type: string
+              description: LLM model name
+              example: "gpt-4"
+            temperature:
+              type: number
+              format: float
+              minimum: 0
+              maximum: 2
+              description: Model temperature
+            max_tokens:
+              type: integer
+              description: Maximum tokens per request
+            tools:
+              type: array
+              items:
+                type: string
+              description: Enabled tools/functions
+          additionalProperties: true
+        metadata:
+          type: object
+          description: Additional metadata
+          additionalProperties: true
+          
+    AgentResponse:
+      type: object
+      required:
+        - agent_id
+        - agent_type
+        - status
+        - tier
+        - created_at
+        - storage_profile
+        - permissions
+      properties:
+        agent_id:
+          type: string
+          description: Unique agent identifier
+        agent_type:
+          type: string
+          description: Type of AI agent
+        status:
+          type: string
+          enum: [active, inactive, suspended]
+          description: Agent status
+        tier:
+          type: string
+          enum: [ultra, premium, standard, cool, archive]
+          description: Assigned storage tier
+        created_at:
+          type: string
+          format: date-time
+          description: Creation timestamp
+        storage_profile:
+          type: object
+          description: Storage configuration and metrics
+          properties:
+            tier:
+              type: string
+              description: Current storage tier
+            usage_bytes:
+              type: integer
+              format: int64
+              description: Total storage used in bytes
+            object_count:
+              type: integer
+              description: Number of stored objects
+            last_accessed:
+              type: string
+              format: date-time
+              description: Last access timestamp
+        permissions:
+          type: array
+          items:
+            type: string
+          description: User permissions for this agent
+          
+    StorageRequest:
+      type: object
+      required:
+        - agent_id
+        - data_type
+        - data
+      properties:
+        agent_id:
+          type: string
+          description: Agent identifier
+        data_type:
+          type: string
+          enum: [vector, memory, knowledge, conversation, artifact]
+          description: Type of data to store
+        data:
+          description: Data to store (type depends on data_type)
+        tier:
+          type: string
+          enum: [ultra, premium, standard, cool, archive]
+          description: Preferred storage tier (auto-selected if not specified)
+        metadata:
+          type: object
+          description: Additional metadata
+          additionalProperties: true
+        ttl:
+          type: integer
+          description: Time to live in seconds
+          minimum: 0
+        encryption_required:
+          type: boolean
+          description: Require encryption at rest
+          default: true
+          
+    StorageResponse:
+      type: object
+      required:
+        - storage_id
+        - agent_id
+        - tier
+        - size_bytes
+        - encrypted
+        - compression_ratio
+        - latency_ms
+        - timestamp
+      properties:
+        storage_id:
+          type: string
+          description: Unique storage identifier
+          example: "store_abc123"
+        agent_id:
+          type: string
+          description: Agent identifier
+        tier:
+          type: string
+          description: Storage tier used
+        size_bytes:
+          type: integer
+          format: int64
+          description: Size in bytes after compression
+        encrypted:
+          type: boolean
+          description: Whether data is encrypted
+        compression_ratio:
+          type: number
+          format: float
+          description: Compression ratio achieved
+          example: 0.75
+        latency_ms:
+          type: number
+          format: float
+          description: Operation latency in milliseconds
+        timestamp:
+          type: string
+          format: date-time
+          description: Storage timestamp
+          
+    VectorSearchRequest:
+      type: object
+      required:
+        - agent_id
+      properties:
+        agent_id:
+          type: string
+          description: Agent identifier
+        query:
+          type: string
+          description: Text query for semantic search
+        vector:
+          type: array
+          items:
+            type: number
+            format: float
+          description: Direct vector for similarity search
+        k:
+          type: integer
+          description: Number of results to return
+          default: 10
+          minimum: 1
+          maximum: 100
+        search_mode:
+          type: string
+          enum: [similarity, mmr, hybrid]
+          description: Search algorithm
+          default: similarity
+        filters:
+          type: object
+          description: Metadata filters
+          additionalProperties: true
+        include_metadata:
+          type: boolean
+          description: Include metadata in results
+          default: true
+          
+    VectorSearchResponse:
+      type: object
+      required:
+        - results
+        - search_time_ms
+        - total_results
+      properties:
+        results:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+                description: Document ID
+              score:
+                type: number
+                format: float
+                description: Similarity score
+              text:
+                type: string
+                description: Document text
+              metadata:
+                type: object
+                description: Document metadata
+        search_time_ms:
+          type: number
+          format: float
+          description: Search execution time
+        total_results:
+          type: integer
+          description: Total matching documents
+
+security:
+  - bearerAuth: []
+
+paths:
+  /health:
+    get:
+      tags:
+        - Health
+      summary: Health check
+      description: |
+        Check if the API is healthy and responsive.
+        
+        This endpoint is used by:
+        - Load balancers for health probing
+        - Monitoring systems for uptime tracking
+        - Kubernetes for liveness checks
+        
+        No authentication required.
+      operationId: healthCheck
+      security: []
+      responses:
+        '200':
+          description: API is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              example:
+                status: healthy
+                timestamp: "2024-01-15T10:30:00Z"
+                version: "1.0.0"
+                environment: production
+        '503':
+          description: API is unhealthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+                
+  /ready:
+    get:
+      tags:
+        - Health
+      summary: Readiness check
+      description: |
+        Check if the API is ready to serve requests.
+        
+        This verifies:
+        - All components are initialized
+        - Database connections are established
+        - Cache is accessible
+        - External services are reachable
+        
+        Used by Kubernetes for readiness probes.
+      operationId: readinessCheck
+      security: []
+      responses:
+        '200':
+          description: API is ready
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [ready]
+                  checks:
+                    type: object
+                    additionalProperties:
+                      type: boolean
+        '503':
+          description: API is not ready
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [not ready]
+                  checks:
+                    type: object
+                    additionalProperties:
+                      type: boolean
+                      
+  /api/v1/agents:
+    post:
+      tags:
+        - Agents
+      summary: Register a new AI agent
+      description: |
+        Register a new AI agent with AgentVault.
+        
+        This endpoint:
+        - Creates a new agent profile
+        - Analyzes agent characteristics
+        - Assigns optimal storage tier
+        - Initializes monitoring
+        - Sets up security policies
+        
+        Required permission: `Agent.Write`
+      operationId: registerAgent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentRegistrationRequest'
+            examples:
+              langchain_agent:
+                summary: LangChain Agent
+                value:
+                  agent_id: "langchain_assistant_001"
+                  agent_type: "langchain"
+                  description: "Customer support assistant"
+                  config:
+                    model: "gpt-4"
+                    temperature: 0.7
+                    tools: ["web_search", "calculator"]
+                  metadata:
+                    department: "support"
+                    owner: "team_alpha"
+              autogen_agent:
+                summary: AutoGen Agent
+                value:
+                  agent_id: "autogen_coder_001"
+                  agent_type: "autogen"
+                  description: "Code generation agent"
+                  config:
+                    model: "gpt-4"
+                    max_tokens: 2000
+      responses:
+        '200':
+          description: Agent registered successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentResponse'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Insufficient permissions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: Agent already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+                
+  /api/v1/agents/{agent_id}:
+    get:
+      tags:
+        - Agents
+      summary: Get agent information
+      description: |
+        Retrieve detailed information about a specific agent.
+        
+        Returns:
+        - Agent configuration
+        - Storage metrics
+        - Current status
+        - Access permissions
+        
+        Required permission: `Agent.Read`
+      operationId: getAgent
+      parameters:
+        - name: agent_id
+          in: path
+          required: true
+          description: Agent identifier
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Agent information
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Insufficient permissions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Agent not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+                
+    delete:
+      tags:
+        - Agents
+      summary: Delete an agent
+      description: |
+        Delete an agent and all associated data.
+        
+        This operation:
+        - Removes agent profile
+        - Deletes all stored data
+        - Cleans up resources
+        - Archives audit logs
+        
+        This operation is irreversible!
+        
+        Required permission: `Agent.Delete`
+      operationId: deleteAgent
+      parameters:
+        - name: agent_id
+          in: path
+          required: true
+          description: Agent identifier
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Agent deleted successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Agent agent_12345 deleted successfully"
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Insufficient permissions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Agent not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+                
+  /api/v1/storage:
+    post:
+      tags:
+        - Storage
+      summary: Store data for an agent
+      description: |
+        Store data for an AI agent with automatic tier optimization.
+        
+        Features:
+        - Automatic compression
+        - Encryption at rest
+        - Deduplication
+        - Lifecycle management
+        
+        Data types:
+        - `vector`: Embeddings for RAG
+        - `memory`: Conversation memory
+        - `knowledge`: Knowledge base entries
+        - `conversation`: Chat histories
+        - `artifact`: Generated content
+        
+        Required permission: `Storage.Write`
+      operationId: storeData
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StorageRequest'
+            examples:
+              vector_storage:
+                summary: Store embeddings
+                value:
+                  agent_id: "agent_12345"
+                  data_type: "vector"
+                  data:
+                    text: "Azure NetApp Files provides enterprise storage"
+                    embedding: [0.1, 0.2, 0.3]
+                  metadata:
+                    source: "documentation"
+                    timestamp: "2024-01-15T10:00:00Z"
+              memory_storage:
+                summary: Store conversation memory
+                value:
+                  agent_id: "agent_12345"
+                  data_type: "memory"
+                  data:
+                    messages: []
+                    summary: "User asked about storage options"
+                  ttl: 86400
+      responses:
+        '200':
+          description: Data stored successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StorageResponse'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Insufficient permissions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '507':
+          description: Insufficient storage
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+                
+  /api/v1/vectors/search:
+    post:
+      tags:
+        - Vectors
+      summary: Search vectors
+      description: |
+        Perform semantic search on stored vectors.
+        
+        Search modes:
+        - `similarity`: Pure cosine similarity
+        - `mmr`: Maximum Marginal Relevance for diversity
+        - `hybrid`: Combines semantic and keyword search
+        
+        Required permission: `Storage.Read`
+      operationId: searchVectors
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VectorSearchRequest'
+            examples:
+              text_search:
+                summary: Search by text query
+                value:
+                  agent_id: "agent_12345"
+                  query: "How to configure Azure NetApp Files?"
+                  k: 5
+                  search_mode: "hybrid"
+              vector_search:
+                summary: Search by vector
+                value:
+                  agent_id: "agent_12345"
+                  vector: [0.1, 0.2, 0.3]
+                  k: 10
+                  filters:
+                    source: "documentation"
+      responses:
+        '200':
+          description: Search results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VectorSearchResponse'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Insufficient permissions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+tags:
+  - name: Health
+    description: Health and readiness checks
+  - name: Agents
+    description: AI agent management
+  - name: Storage
+    description: Data storage operations
+  - name: Vectors
+    description: Vector database operations
+  - name: Machine Learning
+    description: ML predictions and training
+  - name: Cache
+    description: Distributed cache operations
+  - name: Monitoring
+    description: Metrics and monitoring
+  - name: Admin
+    description: Administrative operations

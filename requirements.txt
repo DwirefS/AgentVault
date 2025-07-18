@@ -1,13 +1,23 @@
 # AgentVault™ - Enterprise AI Agent Storage Platform
 # Core Dependencies
 
-# Azure SDK and NetApp Files
+# Azure SDK and NetApp Files - Production with Azure AD
 azure-mgmt-netapp>=10.1.0
 azure-mgmt-resource>=23.0.0
 azure-identity>=1.15.0
+azure-identity-broker>=1.0.0
 azure-storage-file-datalake>=12.14.0
+azure-storage-blob>=12.19.0
 azure-keyvault-secrets>=4.7.0
+azure-keyvault-keys>=4.8.0
+azure-keyvault-certificates>=4.7.0
 azure-monitor-opentelemetry>=1.2.0
+azure-monitor-query>=1.2.0
+azure-monitor-ingestion>=1.0.0
+azure-mgmt-network>=25.1.0
+azure-mgmt-compute>=30.3.0
+azure-mgmt-monitor>=6.0.0
+azure-core>=1.29.0
 
 # AI Agent Frameworks
 autogen-agentchat>=0.2.0
@@ -24,13 +34,15 @@ weaviate-client>=3.25.0
 azure-search-documents>=11.4.0
 pinecone-client>=3.0.0
 
-# High-Performance Storage and Caching
+# High-Performance Storage and Caching - Production ready
 redis[hiredis]>=5.0.0
 redis-py-cluster>=2.1.0
 pymongo>=4.6.0
 psycopg2-binary>=2.9.0
 sqlalchemy>=2.0.0
 aioredis>=2.0.0
+msgpack>=1.0.0
+hnswlib>=0.8.0
 
 # Networking and Communication
 aiohttp>=3.9.0
@@ -56,11 +68,16 @@ opentelemetry-instrumentation>=0.42b0
 loguru>=0.7.0
 structlog>=23.2.0
 
-# Security and Encryption
+# Security and Encryption - Production with Azure AD
 cryptography>=41.0.0
 pyjwt>=2.8.0
 python-jose[cryptography]>=3.3.0
 msal>=1.26.0
+msal-extensions>=1.0.0
+pyotp>=2.9.0
+argon2-cffi>=23.1.0
+pynacl>=1.5.0
+zstandard>=0.22.0
 
 # Configuration and Environment
 pydantic>=2.5.0
@@ -69,10 +86,14 @@ python-dotenv>=1.0.0
 pyyaml>=6.0.0
 toml>=0.10.0
 
-# API and Web Framework
+# API and Web Framework - Production with security
 fastapi>=0.104.0
 uvicorn[standard]>=0.24.0
 starlette>=0.27.0
+gunicorn>=21.2.0
+prometheus-fastapi-instrumentator>=6.1.0
+sentry-sdk>=1.39.0
+cachetools>=5.3.0
 
 # Testing and Development
 pytest>=7.4.0
@@ -94,3 +115,6 @@ rich>=13.7.0
 typer>=0.9.0
 tqdm>=4.66.0
 schedule>=1.2.0
+scipy>=1.11.0
+bandit>=1.7.0
+safety>=3.0.0

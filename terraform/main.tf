@@ -1,8 +1,14 @@
 # AgentVault™ - Enterprise AI Agent Storage Platform
-# Complete Azure NetApp Files Infrastructure as Code
+# Complete Azure Infrastructure with HA, DR, Security & Compliance
 # 
 # This Terraform configuration deploys a production-ready AgentVault™
-# infrastructure optimized for enterprise AI agent storage workloads
+# infrastructure with full enterprise features including:
+# - High Availability across availability zones
+# - Disaster Recovery with cross-region replication
+# - End-to-end encryption and security
+# - Comprehensive monitoring and alerting
+# - Automated backup and recovery
+# - Cost optimization and governance
 #
 # Author: Dwiref Sharma
 # Contact: DwirefS@SapientEdge.io
