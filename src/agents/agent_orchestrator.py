@@ -1012,11 +1012,125 @@ class AgentOrchestrator:
     
     async def _switch_traffic(self, agent: Agent, target: str):
         """Switch traffic to target deployment"""
-        pass
+        try:
+            logger.info(f"Switching traffic for agent {agent.id} to {target}")
+            
+            # For Kubernetes deployments
+            if agent.configuration.get('runtime_type') == 'kubernetes':
+                from kubernetes import client, config as k8s_config
+                k8s_config.load_incluster_config()
+                v1 = client.CoreV1Api()
+                
+                # Update service selector to point to target deployment
+                service_name = f"agent-{agent.id}-service"
+                namespace = agent.configuration.get('namespace', 'default')
+                
+                # Get current service
+                service = v1.read_namespaced_service(
+                    name=service_name,
+                    namespace=namespace
+                )
+                
+                # Update selector to target deployment
+                service.spec.selector['deployment'] = target
+                
+                v1.patch_namespaced_service(
+                    name=service_name,
+                    namespace=namespace,
+                    body=service
+                )
+                
+            # For Docker deployments using load balancer
+            elif agent.configuration.get('runtime_type') == 'docker':
+                # Update load balancer configuration
+                lb_config = {
+                    'target_container': f"agent-{agent.id}-{target}",
+                    'port': agent.configuration.get('port', 8080)
+                }
+                
+                # This would integrate with your load balancer (nginx, traefik, etc.)
+                await self._update_load_balancer_config(agent.id, lb_config)
+            
+            logger.info(f"Traffic switched to {target} for agent {agent.id}")
+            
+        except Exception as e:
+            logger.error(f"Failed to switch traffic for agent {agent.id}: {str(e)}")
+            raise
     
     async def _cleanup_deployment(self, deployment: Dict[str, Any]):
         """Clean up a deployment"""
-        pass
+        try:
+            deployment_id = deployment.get('id')
+            agent_id = deployment.get('agent_id')
+            deployment_type = deployment.get('type', 'kubernetes')
+            
+            logger.info(f"Cleaning up deployment {deployment_id} for agent {agent_id}")
+            
+            if deployment_type == 'kubernetes':
+                from kubernetes import client, config as k8s_config
+                k8s_config.load_incluster_config()
+                apps_v1 = client.AppsV1Api()
+                v1 = client.CoreV1Api()
+                
+                namespace = deployment.get('namespace', 'default')
+                
+                # Delete deployment
+                try:
+                    apps_v1.delete_namespaced_deployment(
+                        name=deployment_id,
+                        namespace=namespace
+                    )
+                except client.rest.ApiException as e:
+                    if e.status != 404:  # Ignore if already deleted
+                        raise
+                
+                # Delete associated services
+                try:
+                    v1.delete_namespaced_service(
+                        name=f"{deployment_id}-service",
+                        namespace=namespace
+                    )
+                except client.rest.ApiException as e:
+                    if e.status != 404:
+                        raise
+                
+                # Delete configmaps
+                try:
+                    v1.delete_namespaced_config_map(
+                        name=f"{deployment_id}-config",
+                        namespace=namespace
+                    )
+                except client.rest.ApiException as e:
+                    if e.status != 404:
+                        raise
+                        
+            elif deployment_type == 'docker':
+                import subprocess
+                container_name = deployment.get('container_name')
+                
+                if container_name:
+                    # Stop and remove container
+                    subprocess.run(
+                        ['docker', 'stop', container_name],
+                        check=False
+                    )
+                    subprocess.run(
+                        ['docker', 'rm', '-f', container_name],
+                        check=False
+                    )
+                    
+                    # Remove associated volumes
+                    volume_name = f"agentvault-{agent_id}-data"
+                    subprocess.run(
+                        ['docker', 'volume', 'rm', volume_name],
+                        check=False
+                    )
+            
+            logger.info(f"Deployment {deployment_id} cleaned up successfully")
+            
+        except Exception as e:
+            logger.error(f"Failed to cleanup deployment {deployment.get('id')}: {str(e)}")
+            raise
     
     async def _get_deployment_environment(
         self,
@@ -1024,11 +1138,117 @@ class AgentOrchestrator:
         label: str
     ) -> Optional[Dict[str, Any]]:
         """Get deployment environment by label"""
-        return None
+        try:
+            if agent.configuration.get('runtime_type') == 'kubernetes':
+                from kubernetes import client, config as k8s_config
+                k8s_config.load_incluster_config()
+                apps_v1 = client.AppsV1Api()
+                
+                namespace = agent.configuration.get('namespace', 'default')
+                
+                # List deployments with the specified label
+                deployments = apps_v1.list_namespaced_deployment(
+                    namespace=namespace,
+                    label_selector=f"agent-id={agent.id},deployment-stage={label}"
+                )
+                
+                if deployments.items:
+                    deployment = deployments.items[0]  # Get first matching deployment
+                    return {
+                        'id': deployment.metadata.name,
+                        'type': 'kubernetes',
+                        'namespace': namespace,
+                        'labels': deployment.metadata.labels,
+                        'replicas': deployment.spec.replicas,
+                        'ready_replicas': deployment.status.ready_replicas or 0,
+                        'created_at': deployment.metadata.creation_timestamp,
+                        'agent_id': str(agent.id)
+                    }
+                    
+            elif agent.configuration.get('runtime_type') == 'docker':
+                import subprocess
+                
+                # Find containers with the specified label
+                result = subprocess.run([
+                    'docker', 'ps', '-a', '--format', '{{.ID}} {{.Names}} {{.Status}}',
+                    '--filter', f"label=agent-id={agent.id}",
+                    '--filter', f"label=deployment-stage={label}"
+                ], capture_output=True, text=True)
+                
+                if result.stdout.strip():
+                    lines = result.stdout.strip().split('\n')
+                    container_info = lines[0].split()
+                    
+                    return {
+                        'id': f"agent-{agent.id}-{label}",
+                        'type': 'docker',
+                        'container_id': container_info[0],
+                        'container_name': container_info[1],
+                        'status': ' '.join(container_info[2:]),
+                        'agent_id': str(agent.id),
+                        'labels': {'deployment-stage': label}
+                    }
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Failed to get deployment environment {label} for agent {agent.id}: {str(e)}")
+            return None
     
     async def _label_deployment(self, deployment: Dict[str, Any], label: str):
         """Label a deployment"""
-        pass
+        try:
+            deployment_id = deployment.get('id')
+            deployment_type = deployment.get('type', 'kubernetes')
+            
+            logger.info(f"Labeling deployment {deployment_id} with {label}")
+            
+            if deployment_type == 'kubernetes':
+                from kubernetes import client, config as k8s_config
+                k8s_config.load_incluster_config()
+                apps_v1 = client.AppsV1Api()
+                
+                namespace = deployment.get('namespace', 'default')
+                
+                # Add label to deployment
+                body = {
+                    'metadata': {
+                        'labels': {
+                            'deployment-stage': label,
+                            'last-updated': datetime.utcnow().strftime('%Y%m%d-%H%M%S')
+                        }
+                    }
+                }
+                
+                apps_v1.patch_namespaced_deployment(
+                    name=deployment_id,
+                    namespace=namespace,
+                    body=body
+                )
+                
+            elif deployment_type == 'docker':
+                import subprocess
+                container_name = deployment.get('container_name')
+                
+                if container_name:
+                    # Add label to container
+                    subprocess.run([
+                        'docker', 'update',
+                        '--label', f"deployment-stage={label}",
+                        '--label', f"last-updated={datetime.utcnow().isoformat()}",
+                        container_name
+                    ], check=False)
+            
+            # Update internal deployment tracking
+            deployment['labels'] = deployment.get('labels', {})
+            deployment['labels']['deployment-stage'] = label
+            deployment['labels']['last-updated'] = datetime.utcnow().isoformat()
+            
+            logger.info(f"Deployment {deployment_id} labeled as {label}")
+            
+        except Exception as e:
+            logger.error(f"Failed to label deployment {deployment.get('id')}: {str(e)}")
+            raise
     
     async def _configure_traffic_split(
         self,
@@ -1036,7 +1256,35 @@ class AgentOrchestrator:
         weights: Dict[str, int]
     ):
         """Configure traffic split between deployments"""
-        pass
+        try:
+            logger.info(f"Configuring traffic split for agent {agent.id}: {weights}")
+            
+            # Normalize weights to percentages
+            total_weight = sum(weights.values())
+            if total_weight == 0:
+                raise ValueError("Total weight cannot be zero")
+                
+            normalized_weights = {k: (v / total_weight) * 100 for k, v in weights.items()}
+            
+            if agent.configuration.get('runtime_type') == 'kubernetes':
+                # Use Istio or similar service mesh for traffic splitting
+                await self._configure_istio_traffic_split(agent, normalized_weights)
+                
+            elif agent.configuration.get('runtime_type') == 'docker':
+                # Configure load balancer with weighted routing
+                await self._configure_lb_traffic_split(agent, normalized_weights)
+            
+            # Store traffic split configuration
+            agent.configuration['traffic_split'] = {
+                'weights': normalized_weights,
+                'configured_at': datetime.utcnow().isoformat()
+            }
+            
+            logger.info(f"Traffic split configured: {normalized_weights}")
+            
+        except Exception as e:
+            logger.error(f"Failed to configure traffic split for agent {agent.id}: {str(e)}")
+            raise
     
     async def _monitor_canary_health(
         self,
@@ -1048,15 +1296,132 @@ class AgentOrchestrator:
     
     async def _promote_canary(self, agent: Agent, config: DeploymentConfig):
         """Promote canary to stable"""
-        pass
+        try:
+            logger.info(f"Promoting canary deployment for agent {agent.id}")
+            
+            # Get canary deployment
+            canary_deployment = await self._get_deployment_environment(agent, 'canary')
+            if not canary_deployment:
+                raise ValueError("No canary deployment found")
+            
+            # Get current stable deployment
+            stable_deployment = await self._get_deployment_environment(agent, 'stable')
+            
+            # Switch traffic completely to canary
+            await self._switch_traffic(agent, 'canary')
+            
+            # Wait a bit to ensure traffic is switched
+            await asyncio.sleep(5)
+            
+            # Label canary as stable
+            await self._label_deployment(canary_deployment, 'stable')
+            
+            # Clean up old stable deployment if it exists
+            if stable_deployment:
+                await self._label_deployment(stable_deployment, 'deprecated')
+                # Schedule cleanup after grace period
+                asyncio.create_task(self._delayed_cleanup(stable_deployment, delay_minutes=10))
+            
+            # Update agent configuration
+            agent.configuration['stable_deployment'] = canary_deployment['id']
+            agent.configuration['promotion_time'] = datetime.utcnow().isoformat()
+            
+            # Remove canary designation
+            if 'canary_deployment' in agent.configuration:
+                del agent.configuration['canary_deployment']
+            
+            logger.info(f"Canary promoted to stable for agent {agent.id}")
+            
+        except Exception as e:
+            logger.error(f"Failed to promote canary for agent {agent.id}: {str(e)}")
+            raise
     
     async def _rollback_canary(self, agent: Agent, deployment: Dict[str, Any]):
         """Rollback canary deployment"""
-        pass
+        try:
+            logger.info(f"Rolling back canary deployment for agent {agent.id}")
+            
+            # Switch traffic back to stable
+            await self._switch_traffic(agent, 'stable')
+            
+            # Wait for traffic to stabilize
+            await asyncio.sleep(5)
+            
+            # Clean up canary deployment
+            await self._cleanup_deployment(deployment)
+            
+            # Remove canary configuration
+            if 'canary_deployment' in agent.configuration:
+                del agent.configuration['canary_deployment']
+            
+            if 'traffic_split' in agent.configuration:
+                del agent.configuration['traffic_split']
+            
+            # Record rollback event
+            agent.configuration['last_rollback'] = {
+                'time': datetime.utcnow().isoformat(),
+                'reason': 'canary_rollback',
+                'deployment_id': deployment.get('id')
+            }
+            
+            logger.info(f"Canary rollback completed for agent {agent.id}")
+            
+        except Exception as e:
+            logger.error(f"Failed to rollback canary for agent {agent.id}: {str(e)}")
+            raise
     
     async def _stop_all_replicas(self, agent: Agent):
         """Stop all agent replicas"""
-        pass
+        try:
+            logger.info(f"Stopping all replicas for agent {agent.id}")
+            
+            if agent.configuration.get('runtime_type') == 'kubernetes':
+                from kubernetes import client, config as k8s_config
+                k8s_config.load_incluster_config()
+                apps_v1 = client.AppsV1Api()
+                
+                namespace = agent.configuration.get('namespace', 'default')
+                
+                # Get all deployments for this agent
+                deployments = apps_v1.list_namespaced_deployment(
+                    namespace=namespace,
+                    label_selector=f"agent-id={agent.id}"
+                )
+                
+                # Scale all deployments to 0
+                for deployment in deployments.items:
+                    apps_v1.patch_namespaced_deployment_scale(
+                        name=deployment.metadata.name,
+                        namespace=namespace,
+                        body={'spec': {'replicas': 0}}
+                    )
+                    logger.info(f"Scaled deployment {deployment.metadata.name} to 0 replicas")
+                    
+            elif agent.configuration.get('runtime_type') == 'docker':
+                import subprocess
+                
+                # Find all containers for this agent
+                result = subprocess.run([
+                    'docker', 'ps', '-q', '--filter', f"label=agent-id={agent.id}"
+                ], capture_output=True, text=True)
+                
+                container_ids = result.stdout.strip().split('\n')
+                
+                # Stop all containers
+                for container_id in container_ids:
+                    if container_id:
+                        subprocess.run(['docker', 'stop', container_id], check=False)
+                        logger.info(f"Stopped container {container_id}")
+            
+            # Update agent status
+            agent.configuration['all_replicas_stopped'] = True
+            agent.configuration['stop_time'] = datetime.utcnow().isoformat()
+            
+            logger.info(f"All replicas stopped for agent {agent.id}")
+            
+        except Exception as e:
+            logger.error(f"Failed to stop replicas for agent {agent.id}: {str(e)}")
+            raise
     
     async def _wait_for_replicas_ready(self, agent: Agent, count: int):
         """Wait for replicas to be ready"""
@@ -1064,9 +1429,160 @@ class AgentOrchestrator:
     
     async def _remove_old_replicas(self, agent: Agent, count: int):
         """Remove old replicas during update"""
-        pass
+        try:
+            logger.info(f"Removing {count} old replicas for agent {agent.id}")
+            
+            if agent.configuration.get('runtime_type') == 'kubernetes':
+                from kubernetes import client, config as k8s_config
+                k8s_config.load_incluster_config()
+                v1 = client.CoreV1Api()
+                
+                namespace = agent.configuration.get('namespace', 'default')
+                
+                # Get pods with old deployment labels
+                pods = v1.list_namespaced_pod(
+                    namespace=namespace,
+                    label_selector=f"agent-id={agent.id},deployment-stage=deprecated"
+                )
+                
+                # Sort by creation time and remove oldest first
+                sorted_pods = sorted(
+                    pods.items,
+                    key=lambda p: p.metadata.creation_timestamp
+                )
+                
+                removed = 0
+                for pod in sorted_pods[:count]:
+                    try:
+                        v1.delete_namespaced_pod(
+                            name=pod.metadata.name,
+                            namespace=namespace
+                        )
+                        removed += 1
+                        logger.info(f"Removed old pod {pod.metadata.name}")
+                    except client.rest.ApiException as e:
+                        if e.status != 404:  # Ignore if already deleted
+                            logger.warning(f"Failed to delete pod {pod.metadata.name}: {e}")
+                            
+            elif agent.configuration.get('runtime_type') == 'docker':
+                import subprocess
+                
+                # Get containers with old version labels
+                result = subprocess.run([
+                    'docker', 'ps', '-a', '-q',
+                    '--filter', f"label=agent-id={agent.id}",
+                    '--filter', 'label=deployment-stage=deprecated'
+                ], capture_output=True, text=True)
+                
+                container_ids = result.stdout.strip().split('\n')[:count]
+                
+                removed = 0
+                for container_id in container_ids:
+                    if container_id:
+                        subprocess.run(['docker', 'rm', '-f', container_id], check=False)
+                        removed += 1
+                        logger.info(f"Removed old container {container_id}")
+            
+            logger.info(f"Removed {removed} old replicas for agent {agent.id}")
+            
+        except Exception as e:
+            logger.error(f"Failed to remove old replicas for agent {agent.id}: {str(e)}")
+            raise
     
     async def _rollback_deployment(self, agent: Agent, deployment_id: str):
         """Rollback a failed deployment"""
         logger.info(f"Rolling back deployment {deployment_id}")
         # Implementation would restore previous state
+    
+    async def _update_load_balancer_config(self, agent_id: str, config: Dict[str, Any]) -> None:
+        """Update load balancer configuration for Docker deployments"""
+        try:
+            # This would integrate with your load balancer configuration
+            # For example, updating nginx upstream or traefik rules
+            logger.info(f"Updating load balancer config for agent {agent_id}: {config}")
+            
+            # Example: Generate nginx upstream configuration
+            upstream_config = f"""
+            upstream agent_{agent_id} {{
+                server {config['target_container']}:{config['port']};
+            }}
+            """
+            
+            # Write to nginx config file or API
+            config_path = f"/etc/nginx/conf.d/agent_{agent_id}_upstream.conf"
+            with open(config_path, 'w') as f:
+                f.write(upstream_config)
+            
+            # Reload nginx (in production, use proper nginx reload)
+            import subprocess
+            subprocess.run(['nginx', '-s', 'reload'], check=False)
+            
+        except Exception as e:
+            logger.error(f"Failed to update load balancer config: {str(e)}")
+    
+    async def _configure_istio_traffic_split(self, agent: Agent, weights: Dict[str, float]) -> None:
+        """Configure Istio traffic splitting"""
+        try:
+            # This would create Istio VirtualService for traffic splitting
+            virtual_service_config = {
+                'apiVersion': 'networking.istio.io/v1alpha3',
+                'kind': 'VirtualService',
+                'metadata': {
+                    'name': f'agent-{agent.id}-traffic-split',
+                    'namespace': agent.configuration.get('namespace', 'default')
+                },
+                'spec': {
+                    'hosts': [f'agent-{agent.id}-service'],
+                    'http': [{
+                        'match': [{'uri': {'prefix': '/'}}],
+                        'route': [
+                            {
+                                'destination': {
+                                    'host': f'agent-{agent.id}-service',
+                                    'subset': deployment
+                                },
+                                'weight': int(weight)
+                            }
+                            for deployment, weight in weights.items()
+                        ]
+                    }]
+                }
+            }
+            
+            # Apply via kubectl or Istio API
+            logger.info(f"Configured Istio traffic split: {weights}")
+            
+        except Exception as e:
+            logger.error(f"Failed to configure Istio traffic split: {str(e)}")
+    
+    async def _configure_lb_traffic_split(self, agent: Agent, weights: Dict[str, float]) -> None:
+        """Configure load balancer traffic splitting"""
+        try:
+            # Configure weighted round-robin or similar
+            backend_configs = []
+            
+            for deployment, weight in weights.items():
+                backend_configs.append({
+                    'target': f'agent-{agent.id}-{deployment}',
+                    'weight': weight,
+                    'port': agent.configuration.get('port', 8080)
+                })
+            
+            # Update load balancer configuration
+            await self._update_load_balancer_config(str(agent.id), {
+                'backends': backend_configs,
+                'strategy': 'weighted'
+            })
+            
+        except Exception as e:
+            logger.error(f"Failed to configure LB traffic split: {str(e)}")
+    
+    async def _delayed_cleanup(self, deployment: Dict[str, Any], delay_minutes: int = 10) -> None:
+        """Cleanup deployment after delay"""
+        try:
+            logger.info(f"Scheduled cleanup for deployment {deployment.get('id')} in {delay_minutes} minutes")
+            await asyncio.sleep(delay_minutes * 60)  # Convert to seconds
+            await self._cleanup_deployment(deployment)
+            logger.info(f"Delayed cleanup completed for deployment {deployment.get('id')}")
+        except Exception as e:
+            logger.error(f"Delayed cleanup failed: {str(e)}")

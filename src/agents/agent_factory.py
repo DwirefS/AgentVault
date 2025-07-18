@@ -123,7 +123,14 @@ class BaseAgentRuntime(ABC):
         if self.container_id:
             return f"http://{self._get_container_name()}:8080"
         
-        return "http://localhost:8080"
+        return f"http://localhost:{self._get_port()}"
+    
+    def _get_port(self) -> int:
+        """Get port for agent API"""
+        # Use a deterministic port based on agent ID
+        # Port range: 30000-40000
+        agent_hash = int(str(self.agent.id).replace('-', '')[:8], 16)
+        return 30000 + (agent_hash % 10000)
 
 
 class LangChainRuntime(BaseAgentRuntime):
@@ -375,13 +382,100 @@ class AutoGenRuntime(BaseAgentRuntime):
     
     async def start(self) -> None:
         """Start AutoGen agent"""
-        # Implementation similar to LangChain
-        pass
+        if not self._initialized:
+            raise RuntimeError("Agent must be initialized before starting")
+        
+        if self._running:
+            logger.warning(f"AutoGen agent {self.agent.id} is already running")
+            return
+        
+        logger.info(f"Starting AutoGen agent {self.agent.id}")
+        
+        # Start the container
+        subprocess.run(
+            ['docker', 'start', self.container_id],
+            check=True
+        )
+        
+        # Wait for agent to be ready
+        await self._wait_for_ready()
+        
+        # Create API client for AutoGen
+        try:
+            from autogen import AssistantAgent
+            self.api_client = AssistantAgent(
+                name=self.agent.name,
+                system_message=self.agent.configuration.get('system_message', ''),
+                llm_config=self.agent.configuration.get('autogen', {}).get('config_list', [])
+            )
+        except ImportError:
+            logger.warning("AutoGen not installed, using HTTP API")
+            import aiohttp
+            self.api_client = aiohttp.ClientSession()
+        
+        self._running = True
+        self.agent.status = 'running'
+        await self.factory.storage_manager.update_agent(self.agent)
+        
+        logger.info(f"AutoGen agent {self.agent.id} started successfully")
     
     async def stop(self, force: bool = False) -> None:
         """Stop AutoGen agent"""
-        # Implementation similar to LangChain
-        pass
+        if not self._running:
+            logger.warning(f"AutoGen agent {self.agent.id} is not running")
+            return
+        
+        logger.info(f"Stopping AutoGen agent {self.agent.id}")
+        
+        # Clean up API client
+        if hasattr(self.api_client, 'close'):
+            await self.api_client.close()
+        
+        # Stop the container
+        subprocess.run(
+            ['docker', 'stop', self.container_id],
+            check=True
+        )
+        
+        if force:
+            # Remove the container
+            subprocess.run(
+                ['docker', 'rm', '-f', self.container_id],
+                check=True
+            )
+        
+        self._running = False
+        self.agent.status = 'stopped'
+        await self.factory.storage_manager.update_agent(self.agent)
+        
+        logger.info(f"AutoGen agent {self.agent.id} stopped")
+    
+    async def _wait_for_ready(self, timeout: int = 60):
+        """Wait for agent to be ready"""
+        start_time = datetime.utcnow()
+        
+        while (datetime.utcnow() - start_time).seconds < timeout:
+            # Check if container is running
+            result = subprocess.run(
+                ['docker', 'inspect', '-f', '{{.State.Running}}', self.container_id],
+                capture_output=True,
+                text=True
+            )
+            
+            if result.returncode == 0 and result.stdout.strip() == 'true':
+                # Check health endpoint
+                try:
+                    import aiohttp
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(f"{self._get_api_endpoint()}/health") as response:
+                            if response.status == 200:
+                                return
+                except:
+                    pass
+            
+            await asyncio.sleep(2)
+        
+        raise TimeoutError("Agent failed to become ready")
 
 
 class CrewAIRuntime(BaseAgentRuntime):
@@ -412,18 +506,155 @@ class CrewAIRuntime(BaseAgentRuntime):
             }
         }
         
-        # Similar setup process
-        # ... (implementation)
+        # Create container for CrewAI agent
+        docker_image = config.get('docker_image', 'agentvault/crewai:latest')
+        container_name = self._get_container_name()
+        
+        # Prepare environment variables
+        env_vars = {
+            'AGENT_ID': str(self.agent.id),
+            'AGENT_NAME': self.agent.name,
+            'AGENT_TYPE': 'crewai',
+            'OPENAI_API_KEY': config.get('openai_api_key', ''),
+            'CREWAI_CONFIG': json.dumps(crewai_config)
+        }
+        
+        # Create and configure container
+        docker_cmd = [
+            'docker', 'create',
+            '--name', container_name,
+            '--network', 'agentvault-network',
+            '-p', f'{self._get_port()}:8080',
+            '--label', f'agent-id={self.agent.id}',
+            '--label', 'managed-by=agentvault',
+            '--restart', 'unless-stopped'
+        ]
+        
+        # Add environment variables
+        for key, value in env_vars.items():
+            docker_cmd.extend(['-e', f'{key}={value}'])
+        
+        # Add volume mounts
+        docker_cmd.extend([
+            '-v', f'agentvault-{self.agent.id}:/data',
+            '-v', '/var/run/docker.sock:/var/run/docker.sock:ro'
+        ])
+        
+        # Add the image
+        docker_cmd.append(docker_image)
+        
+        # Create the container
+        result = subprocess.run(docker_cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(f"Failed to create container: {result.stderr}")
+        
+        self.container_id = result.stdout.strip()
+        
+        # Update agent with container info
+        self.agent.internal_endpoint = f"http://{container_name}:8080"
+        self.agent.configuration['container_id'] = self.container_id
+        await self.factory.storage_manager.update_agent(self.agent)
         
         self._initialized = True
     
     async def start(self) -> None:
         """Start CrewAI agent"""
-        pass
+        if not self._initialized:
+            raise RuntimeError("Agent must be initialized before starting")
+        
+        if self._running:
+            logger.warning(f"CrewAI agent {self.agent.id} is already running")
+            return
+        
+        logger.info(f"Starting CrewAI agent {self.agent.id}")
+        
+        # Start the container
+        subprocess.run(
+            ['docker', 'start', self.container_id],
+            check=True
+        )
+        
+        # Wait for agent to be ready
+        await self._wait_for_ready()
+        
+        # Create API client for CrewAI
+        try:
+            from crewai import Agent
+            self.api_client = Agent(
+                role=self.agent.configuration.get('role', 'Assistant'),
+                goal=self.agent.configuration.get('goal', ''),
+                backstory=self.agent.configuration.get('backstory', ''),
+                verbose=self.agent.configuration.get('verbose', True),
+                allow_delegation=self.agent.configuration.get('allow_delegation', False)
+            )
+        except ImportError:
+            logger.warning("CrewAI not installed, using HTTP API")
+            import aiohttp
+            self.api_client = aiohttp.ClientSession()
+        
+        self._running = True
+        self.agent.status = 'running'
+        await self.factory.storage_manager.update_agent(self.agent)
+        
+        logger.info(f"CrewAI agent {self.agent.id} started successfully")
     
     async def stop(self, force: bool = False) -> None:
         """Stop CrewAI agent"""
-        pass
+        if not self._running:
+            logger.warning(f"CrewAI agent {self.agent.id} is not running")
+            return
+        
+        logger.info(f"Stopping CrewAI agent {self.agent.id}")
+        
+        # Clean up API client
+        if hasattr(self.api_client, 'close'):
+            await self.api_client.close()
+        
+        # Stop the container
+        subprocess.run(
+            ['docker', 'stop', self.container_id],
+            check=True
+        )
+        
+        if force:
+            # Remove the container
+            subprocess.run(
+                ['docker', 'rm', '-f', self.container_id],
+                check=True
+            )
+        
+        self._running = False
+        self.agent.status = 'stopped'
+        await self.factory.storage_manager.update_agent(self.agent)
+        
+        logger.info(f"CrewAI agent {self.agent.id} stopped")
+    
+    async def _wait_for_ready(self, timeout: int = 60):
+        """Wait for agent to be ready"""
+        start_time = datetime.utcnow()
+        
+        while (datetime.utcnow() - start_time).seconds < timeout:
+            # Check if container is running
+            result = subprocess.run(
+                ['docker', 'inspect', '-f', '{{.State.Running}}', self.container_id],
+                capture_output=True,
+                text=True
+            )
+            
+            if result.returncode == 0 and result.stdout.strip() == 'true':
+                # Check health endpoint
+                try:
+                    import aiohttp
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(f"{self._get_api_endpoint()}/health") as response:
+                            if response.status == 200:
+                                return
+                except:
+                    pass
+            
+            await asyncio.sleep(2)
+        
+        raise TimeoutError("Agent failed to become ready")
 
 
 class CustomRuntime(BaseAgentRuntime):
@@ -473,15 +704,218 @@ class CustomRuntime(BaseAgentRuntime):
     async def _initialize_kubernetes_runtime(self, config: Dict[str, Any]):
         """Initialize Kubernetes-based custom runtime"""
         # Create Kubernetes deployment
-        # Implementation...
+        from kubernetes import client, config as k8s_config
+        k8s_config.load_incluster_config()
+        apps_v1 = client.AppsV1Api()
+        
+        deployment = client.V1Deployment(
+            metadata=client.V1ObjectMeta(
+                name=f"agent-{self.agent.id}",
+                labels={"agent-id": str(self.agent.id)}
+            ),
+            spec=client.V1DeploymentSpec(
+                replicas=0,  # Start with 0, will scale up on start
+                selector=client.V1LabelSelector(
+                    match_labels={"agent-id": str(self.agent.id)}
+                ),
+                template=client.V1PodTemplateSpec(
+                    metadata=client.V1ObjectMeta(
+                        labels={"agent-id": str(self.agent.id)}
+                    ),
+                    spec=client.V1PodSpec(
+                        containers=[
+                            client.V1Container(
+                                name="agent",
+                                image=config.get('kubernetes_image', 'agentvault/custom-agent:latest'),
+                                env=[
+                                    client.V1EnvVar(name="AGENT_ID", value=str(self.agent.id)),
+                                    client.V1EnvVar(name="AGENT_NAME", value=self.agent.name),
+                                ],
+                                ports=[client.V1ContainerPort(container_port=8080)]
+                            )
+                        ]
+                    )
+                )
+            )
+        )
+        
+        namespace = config.get('namespace', 'default')
+        apps_v1.create_namespaced_deployment(
+            namespace=namespace,
+            body=deployment
+        )
     
     async def start(self) -> None:
         """Start custom agent"""
-        pass
+        if not self._initialized:
+            raise RuntimeError("Agent must be initialized before starting")
+        
+        if self._running:
+            logger.warning(f"Custom agent {self.agent.id} is already running")
+            return
+        
+        logger.info(f"Starting custom agent {self.agent.id}")
+        
+        runtime_type = self.agent.configuration.get('runtime_type', 'python')
+        
+        if runtime_type == 'python':
+            # Start Python process
+            script_path = self.agent.configuration.get('script_path')
+            if not script_path:
+                raise ValueError("script_path is required for Python runtime")
+            
+            self.process = await asyncio.create_subprocess_exec(
+                'python', script_path,
+                env={
+                    **os.environ,
+                    'AGENT_ID': str(self.agent.id),
+                    'AGENT_NAME': self.agent.name,
+                    'AGENTVAULT_API': self._get_api_endpoint()
+                },
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            
+        elif runtime_type == 'docker':
+            # Start Docker container
+            subprocess.run(
+                ['docker', 'start', self.container_id],
+                check=True
+            )
+            await self._wait_for_ready()
+            
+        elif runtime_type == 'kubernetes':
+            # Update deployment to start pods
+            from kubernetes import client, config as k8s_config
+            k8s_config.load_incluster_config()
+            apps_v1 = client.AppsV1Api()
+            
+            deployment_name = f"agent-{self.agent.id}"
+            namespace = self.agent.configuration.get('namespace', 'default')
+            
+            # Scale deployment to 1
+            apps_v1.patch_namespaced_deployment_scale(
+                name=deployment_name,
+                namespace=namespace,
+                body={'spec': {'replicas': 1}}
+            )
+        
+        self._running = True
+        self.agent.status = 'running'
+        await self.factory.storage_manager.update_agent(self.agent)
+        
+        logger.info(f"Custom agent {self.agent.id} started successfully")
     
     async def stop(self, force: bool = False) -> None:
         """Stop custom agent"""
-        pass
+        if not self._running:
+            logger.warning(f"Custom agent {self.agent.id} is not running")
+            return
+        
+        logger.info(f"Stopping custom agent {self.agent.id}")
+        
+        runtime_type = self.agent.configuration.get('runtime_type', 'python')
+        
+        if runtime_type == 'python':
+            # Stop Python process
+            if self.process:
+                self.process.terminate()
+                try:
+                    await asyncio.wait_for(self.process.wait(), timeout=10)
+                except asyncio.TimeoutError:
+                    self.process.kill()
+                    await self.process.wait()
+                    
+        elif runtime_type == 'docker':
+            # Stop Docker container
+            subprocess.run(
+                ['docker', 'stop', self.container_id],
+                check=True
+            )
+            if force:
+                subprocess.run(
+                    ['docker', 'rm', '-f', self.container_id],
+                    check=True
+                )
+                
+        elif runtime_type == 'kubernetes':
+            # Scale deployment to 0
+            from kubernetes import client, config as k8s_config
+            k8s_config.load_incluster_config()
+            apps_v1 = client.AppsV1Api()
+            
+            deployment_name = f"agent-{self.agent.id}"
+            namespace = self.agent.configuration.get('namespace', 'default')
+            
+            # Scale to 0
+            apps_v1.patch_namespaced_deployment_scale(
+                name=deployment_name,
+                namespace=namespace,
+                body={'spec': {'replicas': 0}}
+            )
+            
+            if force:
+                # Delete deployment
+                apps_v1.delete_namespaced_deployment(
+                    name=deployment_name,
+                    namespace=namespace
+                )
+        
+        self._running = False
+        self.agent.status = 'stopped'
+        await self.factory.storage_manager.update_agent(self.agent)
+        
+        logger.info(f"Custom agent {self.agent.id} stopped")
+    
+    async def _wait_for_ready(self, timeout: int = 60):
+        """Wait for agent to be ready"""
+        start_time = datetime.utcnow()
+        
+        while (datetime.utcnow() - start_time).seconds < timeout:
+            runtime_type = self.agent.configuration.get('runtime_type', 'python')
+            
+            if runtime_type == 'docker':
+                # Check if container is running
+                result = subprocess.run(
+                    ['docker', 'inspect', '-f', '{{.State.Running}}', self.container_id],
+                    capture_output=True,
+                    text=True
+                )
+                
+                if result.returncode == 0 and result.stdout.strip() == 'true':
+                    # Check health endpoint
+                    try:
+                        import aiohttp
+                        async with aiohttp.ClientSession() as session:
+                            async with session.get(f"{self._get_api_endpoint()}/health") as response:
+                                if response.status == 200:
+                                    return
+                    except:
+                        pass
+            elif runtime_type == 'python':
+                # For Python processes, check if process is running
+                if self.process and self.process.returncode is None:
+                    return
+            elif runtime_type == 'kubernetes':
+                # Check Kubernetes deployment status
+                from kubernetes import client, config as k8s_config
+                k8s_config.load_incluster_config()
+                apps_v1 = client.AppsV1Api()
+                
+                deployment_name = f"agent-{self.agent.id}"
+                namespace = self.agent.configuration.get('namespace', 'default')
+                
+                deployment = apps_v1.read_namespaced_deployment(
+                    name=deployment_name,
+                    namespace=namespace
+                )
+                
+                if deployment.status.ready_replicas and deployment.status.ready_replicas > 0:
+                    return
+            
+            await asyncio.sleep(2)
+        
+        raise TimeoutError("Agent failed to become ready")
 
 
 class AgentFactory:

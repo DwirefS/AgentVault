@@ -624,8 +624,28 @@ class AgentManager:
         # Get current usage
         current_usage = self.agent_repo.get_resource_usage(tenant_id)
         
-        # Check each resource type
-        # TODO: Implement quota checking against tenant limits
+        # Check each resource type against tenant limits
+        tenant_limits = await self._get_tenant_limits(tenant_id)
+        
+        # Check CPU quota
+        if current_usage.get('cpu_cores', 0) + cpu_cores > tenant_limits.get('max_cpu_cores', 100):
+            return False, f"CPU quota exceeded. Current: {current_usage.get('cpu_cores', 0)}, Requested: {cpu_cores}, Limit: {tenant_limits.get('max_cpu_cores', 100)}"
+        
+        # Check memory quota
+        if current_usage.get('memory_gb', 0) + memory_gb > tenant_limits.get('max_memory_gb', 1000):
+            return False, f"Memory quota exceeded. Current: {current_usage.get('memory_gb', 0)}, Requested: {memory_gb}, Limit: {tenant_limits.get('max_memory_gb', 1000)}"
+        
+        # Check storage quota
+        if current_usage.get('storage_gb', 0) + storage_gb > tenant_limits.get('max_storage_gb', 10000):
+            return False, f"Storage quota exceeded. Current: {current_usage.get('storage_gb', 0)}, Requested: {storage_gb}, Limit: {tenant_limits.get('max_storage_gb', 10000)}"
+        
+        # Check agent count quota
+        if current_usage.get('agent_count', 0) >= tenant_limits.get('max_agents', 50):
+            return False, f"Agent count quota exceeded. Current: {current_usage.get('agent_count', 0)}, Limit: {tenant_limits.get('max_agents', 50)}"
+        
+        # Check GPU quota if requested
+        if gpu_enabled and current_usage.get('gpu_count', 0) >= tenant_limits.get('max_gpus', 10):
+            return False, f"GPU quota exceeded. Current: {current_usage.get('gpu_count', 0)}, Limit: {tenant_limits.get('max_gpus', 10)}"
         
         return True, None
     
@@ -1065,3 +1085,53 @@ class AgentLifecycleManager:
         """Send notification about agent state"""
         # Implement notification logic
         pass
+    
+    async def _get_tenant_limits(self, tenant_id: str) -> Dict[str, Any]:
+        """Get resource limits for tenant"""
+        # In production, this would query tenant configuration database
+        # For now, return default limits based on tenant tier
+        
+        # Try to get from database first
+        try:
+            tenant_config = await self.agent_repo.get_tenant_config(tenant_id)
+            if tenant_config:
+                return tenant_config.get('resource_limits', {})
+        except Exception:
+            pass
+        
+        # Fallback to default limits based on tenant tier
+        # These would be configurable in production
+        default_limits = {
+            'enterprise': {
+                'max_cpu_cores': 1000,
+                'max_memory_gb': 10000,
+                'max_storage_gb': 100000,
+                'max_agents': 500,
+                'max_gpus': 100
+            },
+            'professional': {
+                'max_cpu_cores': 200,
+                'max_memory_gb': 2000,
+                'max_storage_gb': 20000,
+                'max_agents': 100,
+                'max_gpus': 20
+            },
+            'starter': {
+                'max_cpu_cores': 50,
+                'max_memory_gb': 500,
+                'max_storage_gb': 5000,
+                'max_agents': 25,
+                'max_gpus': 5
+            }
+        }
+        
+        # Default to starter tier
+        tenant_tier = 'starter'
+        
+        # Try to determine tier from tenant_id or other metadata
+        if 'enterprise' in tenant_id.lower():
+            tenant_tier = 'enterprise'
+        elif 'pro' in tenant_id.lower():
+            tenant_tier = 'professional'
+        
+        return default_limits.get(tenant_tier, default_limits['starter'])

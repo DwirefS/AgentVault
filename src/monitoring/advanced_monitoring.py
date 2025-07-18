@@ -642,10 +642,61 @@ class AdvancedMonitoringSystem:
         resolved: bool = False
     ) -> None:
         """Send email notification"""
+        import smtplib
+        from email.mime.text import MIMEText
+        from email.mime.multipart import MIMEMultipart
         
-        # Email implementation would go here
-        # Using SMTP or cloud email service
-        pass
+        try:
+            # Email configuration from config
+            smtp_server = self.config.get('smtp_server', 'smtp.gmail.com')
+            smtp_port = self.config.get('smtp_port', 587)
+            smtp_username = self.config.get('smtp_username')
+            smtp_password = self.config.get('smtp_password')
+            email_from = self.config.get('email_from', smtp_username)
+            email_to = self.config.get('email_to', [])
+            
+            if not smtp_username or not smtp_password or not email_to:
+                logger.warning("Email configuration incomplete, skipping email notification")
+                return
+            
+            # Create message
+            msg = MIMEMultipart()
+            msg['From'] = email_from
+            msg['To'] = ', '.join(email_to)
+            
+            status = "RESOLVED" if resolved else "TRIGGERED"
+            msg['Subject'] = f"AgentVault Alert {status}: {alert.name}"
+            
+            # Email body
+            body = f"""
+            Alert: {alert.name}
+            Status: {status}
+            Severity: {alert.severity}
+            Description: {alert.description}
+            
+            Time: {alert.timestamp}
+            Agent ID: {alert.agent_id or 'N/A'}
+            
+            Details:
+            {alert.details}
+            
+            This is an automated message from AgentVault Monitoring.
+            """
+            
+            msg.attach(MIMEText(body, 'plain'))
+            
+            # Send email
+            server = smtplib.SMTP(smtp_server, smtp_port)
+            server.starttls()
+            server.login(smtp_username, smtp_password)
+            text = msg.as_string()
+            server.sendmail(email_from, email_to, text)
+            server.quit()
+            
+            logger.info(f"Email notification sent for alert {alert.id}")
+            
+        except Exception as e:
+            logger.error(f"Failed to send email notification: {str(e)}")
     
     async def _send_pagerduty_notification(
         self,
@@ -653,9 +704,56 @@ class AdvancedMonitoringSystem:
         resolved: bool = False
     ) -> None:
         """Send PagerDuty notification"""
+        import aiohttp
+        import uuid
         
-        # PagerDuty Events API v2 implementation
-        pass
+        try:
+            pagerduty_key = self.config.get('pagerduty_key')
+            if not pagerduty_key:
+                logger.warning("PagerDuty integration key not configured")
+                return
+            
+            # PagerDuty Events API v2
+            url = "https://events.pagerduty.com/v2/enqueue"
+            
+            event_action = "resolve" if resolved else "trigger"
+            dedup_key = f"agentvault-{alert.id}"
+            
+            payload = {
+                "routing_key": pagerduty_key,
+                "event_action": event_action,
+                "dedup_key": dedup_key,
+                "payload": {
+                    "summary": f"AgentVault Alert: {alert.name}",
+                    "source": "AgentVault",
+                    "severity": alert.severity.lower(),
+                    "timestamp": alert.timestamp.isoformat(),
+                    "component": "AgentVault Monitoring",
+                    "group": alert.agent_id or "system",
+                    "class": "monitoring",
+                    "custom_details": {
+                        "alert_id": str(alert.id),
+                        "agent_id": alert.agent_id,
+                        "description": alert.description,
+                        "details": alert.details
+                    }
+                }
+            }
+            
+            headers = {
+                "Content-Type": "application/json"
+            }
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=payload, headers=headers) as response:
+                    if response.status == 202:
+                        logger.info(f"PagerDuty notification sent for alert {alert.id}")
+                    else:
+                        response_text = await response.text()
+                        logger.error(f"PagerDuty notification failed: {response.status} - {response_text}")
+                        
+        except Exception as e:
+            logger.error(f"Failed to send PagerDuty notification: {str(e)}")
     
     async def _send_azure_alert(
         self,
@@ -663,9 +761,80 @@ class AdvancedMonitoringSystem:
         resolved: bool = False
     ) -> None:
         """Send Azure Monitor alert"""
-        
-        # Azure Monitor alert implementation
-        pass
+        try:
+            from azure.identity import DefaultAzureCredential
+            from azure.mgmt.monitor import MonitorManagementClient
+            from azure.mgmt.monitor.models import (
+                ActionGroupResource,
+                EmailReceiver,
+                ActivityLogAlertResource,
+                ActivityLogAlertAllOfCondition,
+                ActivityLogAlertLeafCondition
+            )
+            import aiohttp
+            
+            # Azure configuration
+            subscription_id = self.config.get('azure_subscription_id')
+            resource_group = self.config.get('azure_resource_group')
+            action_group_name = self.config.get('azure_action_group')
+            
+            if not all([subscription_id, resource_group, action_group_name]):
+                logger.warning("Azure Monitor configuration incomplete")
+                return
+            
+            # Use Azure Monitor REST API for custom alerts
+            webhook_url = self.config.get('azure_webhook_url')
+            if webhook_url:
+                # Send to Azure Logic App or Function webhook
+                payload = {
+                    "alertId": str(alert.id),
+                    "alertName": alert.name,
+                    "severity": alert.severity,
+                    "status": "Resolved" if resolved else "Triggered",
+                    "description": alert.description,
+                    "timestamp": alert.timestamp.isoformat(),
+                    "agentId": alert.agent_id,
+                    "details": alert.details,
+                    "source": "AgentVault"
+                }
+                
+                headers = {
+                    "Content-Type": "application/json"
+                }
+                
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(webhook_url, json=payload, headers=headers) as response:
+                        if response.status in [200, 202]:
+                            logger.info(f"Azure webhook notification sent for alert {alert.id}")
+                        else:
+                            response_text = await response.text()
+                            logger.error(f"Azure webhook failed: {response.status} - {response_text}")
+            else:
+                # Alternative: Log to Azure Application Insights
+                app_insights_key = self.config.get('azure_app_insights_key')
+                if app_insights_key:
+                    # Send custom event to Application Insights
+                    from applicationinsights import TelemetryClient
+                    tc = TelemetryClient(app_insights_key)
+                    
+                    properties = {
+                        'alertId': str(alert.id),
+                        'alertName': alert.name,
+                        'severity': alert.severity,
+                        'status': 'Resolved' if resolved else 'Triggered',
+                        'agentId': alert.agent_id or 'system',
+                        'description': alert.description
+                    }
+                    
+                    tc.track_event('AgentVaultAlert', properties)
+                    tc.flush()
+                    
+                    logger.info(f"Azure Application Insights event sent for alert {alert.id}")
+                        
+        except ImportError:
+            logger.warning("Azure SDK not installed, cannot send Azure alerts")
+        except Exception as e:
+            logger.error(f"Failed to send Azure alert: {str(e)}")
     
     async def _detect_anomalies(
         self,
@@ -1291,8 +1460,75 @@ class AdvancedMonitoringSystem:
                 })
         
         # Send to Azure Monitor
-        # Implementation depends on Azure Monitor API
-        pass
+        try:
+            # Use Azure Monitor Custom Metrics API
+            subscription_id = self.config.get('azure_subscription_id')
+            resource_group = self.config.get('azure_resource_group')
+            resource_name = self.config.get('azure_resource_name', 'agentvault')
+            
+            if not all([subscription_id, resource_group]):
+                logger.debug("Azure Monitor configuration incomplete, skipping export")
+                return
+            
+            # Try Application Insights first (easier to implement)
+            app_insights_key = self.config.get('azure_app_insights_key')
+            if app_insights_key:
+                try:
+                    from applicationinsights import TelemetryClient
+                    tc = TelemetryClient(app_insights_key)
+                    
+                    for metric in custom_metrics:
+                        tc.track_metric(
+                            metric['metric'],
+                            metric['value'],
+                            properties=metric['dimensions']
+                        )
+                    
+                    tc.flush()
+                    logger.debug(f"Exported {len(custom_metrics)} metrics to Application Insights")
+                    
+                except ImportError:
+                    logger.debug("Application Insights SDK not available")
+                    
+            # Alternative: Azure Monitor REST API
+            else:
+                import aiohttp
+                from azure.identity import DefaultAzureCredential
+                
+                try:
+                    credential = DefaultAzureCredential()
+                    token = credential.get_token("https://management.azure.com/.default")
+                    
+                    url = f"https://management.azure.com/subscriptions/{subscription_id}/resourceGroups/{resource_group}/providers/Microsoft.Insights/metrics"
+                    
+                    headers = {
+                        "Authorization": f"Bearer {token.token}",
+                        "Content-Type": "application/json"
+                    }
+                    
+                    # Note: Azure Monitor Custom Metrics API requires specific format
+                    # This is a simplified implementation
+                    payload = {
+                        "time": datetime.utcnow().isoformat(),
+                        "data": {
+                            "baseData": {
+                                "metrics": custom_metrics
+                            }
+                        }
+                    }
+                    
+                    async with aiohttp.ClientSession() as session:
+                        async with session.post(url, json=payload, headers=headers) as response:
+                            if response.status == 200:
+                                logger.debug(f"Exported {len(custom_metrics)} metrics to Azure Monitor")
+                            else:
+                                logger.warning(f"Azure Monitor export failed: {response.status}")
+                                
+                except Exception as e:
+                    logger.debug(f"Azure Monitor export failed: {str(e)}")
+                    
+        except Exception as e:
+            logger.error(f"Failed to export metrics to Azure Monitor: {str(e)}")
     
     async def shutdown(self) -> None:
         """Shutdown monitoring system"""

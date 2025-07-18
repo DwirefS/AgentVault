@@ -84,7 +84,9 @@ def init(ctx, output, template, validate_only):
 @cli.group()
 def agent():
     """Manage AI agents"""
-    pass
+    # Initialize agent management context
+    click.echo("AgentVault Agent Management")
+    click.echo("Available commands: register, list, start, stop, status, delete")
 
 
 @agent.command('register')
@@ -232,7 +234,9 @@ Average Latency: [red]{stats['avg_latency_ms']:.2f} ms[/red]
 @cli.group()
 def storage():
     """Manage storage operations"""
-    pass
+    # Initialize storage management context
+    click.echo("AgentVault Storage Management")
+    click.echo("Available commands: volumes, tiers, metrics, optimize")
 
 
 @storage.command('write')
@@ -325,7 +329,9 @@ def storage_read(ctx, agent_id, key, output, api_url):
 @cli.group()
 def migrate():
     """Database migration commands"""
-    pass
+    # Initialize migration context
+    click.echo("AgentVault Database Migration")
+    click.echo("Available commands: up, down, status, create")
 
 
 @migrate.command('run')

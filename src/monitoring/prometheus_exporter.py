@@ -231,8 +231,27 @@ class PrometheusExporter:
     
     def record_cache_hit(self, agent_id: str, hit: bool) -> None:
         """Record cache hit/miss"""
-        # In real implementation, this would track hit rate over time
-        pass
+        # Update cache hit rate metrics
+        cache_status = "hit" if hit else "miss"
+        cache_hits.labels(
+            agent_id=agent_id,
+            cache_type="agent_cache",
+            status=cache_status
+        ).inc()
+        
+        # Calculate and update hit rate
+        # This would be done more efficiently in production with time windows
+        try:
+            hit_count = cache_hits.labels(agent_id=agent_id, cache_type="agent_cache", status="hit")._value._value
+            miss_count = cache_hits.labels(agent_id=agent_id, cache_type="agent_cache", status="miss")._value._value
+            
+            total = hit_count + miss_count
+            if total > 0:
+                hit_rate = (hit_count / total) * 100
+                cache_hit_rate.labels(agent_id=agent_id).set(hit_rate)
+        except Exception:
+            # Fallback if metric access fails
+            pass
     
     def record_storage_usage(self, agent_id: str, tier: str, bytes_used: int) -> None:
         """Record storage usage"""

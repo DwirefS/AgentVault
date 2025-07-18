@@ -601,18 +601,77 @@ class StorageTierManager:
             # Log transition start
             self.logger.info(f"Starting tier transition: {transition.transition_id}")
             
-            # TODO: Actual data movement implementation would go here
-            # This would integrate with ANFStorageManager to move data
+            # Actual data movement implementation
+            data_id = transition.transition_id.split('-')[1]  # Extract data_id
             
-            # Simulate transition (in production, this would be actual data movement)
-            await asyncio.sleep(0.1)
+            # Get data metadata
+            pattern = self.access_patterns.get(data_id)
+            if not pattern:
+                raise ValueError(f"No access pattern found for data {data_id}")
             
-            # Update pattern
-            pattern = self.access_patterns.get(
-                transition.transition_id.split('-')[1]  # Extract data_id
-            )
-            if pattern:
-                pattern.current_tier = transition.target_tier
+            # Determine source and target storage paths
+            source_tier = pattern.current_tier
+            target_tier = transition.target_tier
+            
+            # Get ANF volume configurations
+            source_config = self.tier_config.get(source_tier.value)
+            target_config = self.tier_config.get(target_tier.value)
+            
+            if not source_config or not target_config:
+                raise ValueError(f"Tier configuration missing for {source_tier} or {target_tier}")
+            
+            # Construct file paths
+            source_path = f"{source_config['mount_point']}/{data_id}"
+            target_path = f"{target_config['mount_point']}/{data_id}"
+            
+            self.logger.info(f"Moving data from {source_path} to {target_path}")
+            
+            # Perform the actual file movement
+            import shutil
+            import os
+            
+            try:
+                # Ensure target directory exists
+                os.makedirs(os.path.dirname(target_path), exist_ok=True)
+                
+                # Check if source exists
+                if not os.path.exists(source_path):
+                    raise FileNotFoundError(f"Source file not found: {source_path}")
+                
+                # Copy file to target tier
+                if transition.transition_type == "copy":
+                    shutil.copy2(source_path, target_path)
+                    self.logger.info(f"Copied data from {source_tier} to {target_tier}")
+                
+                # Move file to target tier (default)
+                else:
+                    shutil.move(source_path, target_path)
+                    self.logger.info(f"Moved data from {source_tier} to {target_tier}")
+                
+                # Verify the transfer
+                if not os.path.exists(target_path):
+                    raise RuntimeError(f"Data transfer verification failed: {target_path}")
+                
+                # Update access pattern with new location
+                pattern.storage_path = target_path
+                
+                # Record transfer metrics
+                file_size = os.path.getsize(target_path)
+                transfer_time = (datetime.utcnow() - transition.started_at).total_seconds()
+                
+                self.logger.info(
+                    f"Data movement completed: {file_size} bytes in {transfer_time:.2f} seconds "
+                    f"({file_size / transfer_time / 1024 / 1024:.2f} MB/s)"
+                )
+                
+            except Exception as e:
+                self.logger.error(f"Data movement failed: {str(e)}")
+                transition.status = "failed"
+                transition.error_message = str(e)
+                raise
+            
+            # Update pattern (already done above)
+            pattern.current_tier = transition.target_tier
             
             # Mark transition complete
             transition.status = "completed"

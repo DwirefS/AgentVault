@@ -324,9 +324,80 @@ class AgentStateMachine:
             return False
         
         # Check health checks pass
-        # TODO: Implement health check
-        
-        return True
+        try:
+            # Check agent process health
+            if hasattr(agent, 'process_id') and agent.process_id:
+                import psutil
+                try:
+                    process = psutil.Process(agent.process_id)
+                    if not process.is_running():
+                        logger.warning(f"Agent {agent.id} process not running")
+                        return False
+                except psutil.NoSuchProcess:
+                    logger.warning(f"Agent {agent.id} process not found")
+                    return False
+            
+            # Check container health (if containerized)
+            if hasattr(agent, 'container_id') and agent.container_id:
+                import subprocess
+                result = subprocess.run(
+                    ['docker', 'inspect', '--format={{.State.Health.Status}}', agent.container_id],
+                    capture_output=True,
+                    text=True
+                )
+                if result.returncode == 0:
+                    health_status = result.stdout.strip()
+                    if health_status not in ['healthy', 'none']:
+                        logger.warning(f"Agent {agent.id} container unhealthy: {health_status}")
+                        return False
+            
+            # Check API endpoint health
+            if hasattr(agent, 'internal_endpoint') and agent.internal_endpoint:
+                import aiohttp
+                import asyncio
+                
+                async def check_endpoint():
+                    try:
+                        async with aiohttp.ClientSession() as session:
+                            async with session.get(
+                                f"{agent.internal_endpoint}/health",
+                                timeout=aiohttp.ClientTimeout(total=5)
+                            ) as response:
+                                return response.status == 200
+                    except:
+                        return False
+                
+                # Run async health check
+                try:
+                    loop = asyncio.get_event_loop()
+                    health_ok = loop.run_until_complete(check_endpoint())
+                    if not health_ok:
+                        logger.warning(f"Agent {agent.id} API endpoint unhealthy")
+                        return False
+                except:
+                    # If we can't run async, skip endpoint check
+                    pass
+            
+            # Check resource utilization
+            metadata = agent.state_metadata or {}
+            cpu_usage = metadata.get('cpu_usage', 0)
+            memory_usage = metadata.get('memory_usage', 0)
+            
+            # Alert if resource usage too high
+            if cpu_usage > 95:
+                logger.warning(f"Agent {agent.id} CPU usage critical: {cpu_usage}%")
+                return False
+            
+            if memory_usage > 95:
+                logger.warning(f"Agent {agent.id} memory usage critical: {memory_usage}%")
+                return False
+            
+            logger.debug(f"Agent {agent.id} health check passed")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Health check failed for agent {agent.id}: {str(e)}")
+            return False
     
     def _check_maintenance_complete(self, agent: Agent) -> bool:
         """Check if maintenance is complete"""
@@ -363,12 +434,187 @@ class AgentStateMachine:
     def _allocate_resources(self, agent: Agent):
         """Allocate compute resources for agent"""
         logger.info(f"Allocating resources for agent {agent.id}")
-        # TODO: Implement resource allocation
+        
+        try:
+            # Get resource requirements from agent configuration
+            config = agent.configuration or {}
+            cpu_cores = config.get('cpu_cores', 1)
+            memory_gb = config.get('memory_gb', 2)
+            storage_gb = config.get('storage_gb', 10)
+            
+            # Check available resources
+            import psutil
+            available_memory = psutil.virtual_memory().available / (1024**3)  # GB
+            available_cpu = psutil.cpu_count()
+            
+            if memory_gb > available_memory * 0.8:  # Leave 20% buffer
+                logger.warning(f"Insufficient memory for agent {agent.id}: need {memory_gb}GB, available {available_memory:.1f}GB")
+                # Scale down requirements if possible
+                memory_gb = min(memory_gb, available_memory * 0.5)
+                agent.configuration['memory_gb'] = memory_gb
+            
+            if cpu_cores > available_cpu:
+                logger.warning(f"Insufficient CPU for agent {agent.id}: need {cpu_cores} cores, available {available_cpu}")
+                cpu_cores = min(cpu_cores, available_cpu)
+                agent.configuration['cpu_cores'] = cpu_cores
+            
+            # For Kubernetes deployments
+            if agent.configuration.get('runtime_type') == 'kubernetes':
+                from kubernetes import client, config as k8s_config
+                k8s_config.load_incluster_config()
+                apps_v1 = client.AppsV1Api()
+                
+                # Update resource limits
+                deployment_name = f"agent-{agent.id}"
+                namespace = agent.configuration.get('namespace', 'default')
+                
+                # Patch deployment with resource requirements
+                body = {
+                    'spec': {
+                        'template': {
+                            'spec': {
+                                'containers': [{
+                                    'name': 'agent',
+                                    'resources': {
+                                        'requests': {
+                                            'cpu': f"{cpu_cores}",
+                                            'memory': f"{memory_gb}Gi"
+                                        },
+                                        'limits': {
+                                            'cpu': f"{cpu_cores * 2}",  # Allow burst
+                                            'memory': f"{memory_gb * 1.5}Gi"
+                                        }
+                                    }
+                                }]
+                            }
+                        }
+                    }
+                }
+                
+                try:
+                    apps_v1.patch_namespaced_deployment(
+                        name=deployment_name,
+                        namespace=namespace,
+                        body=body
+                    )
+                    logger.info(f"Updated resource allocation for agent {agent.id}")
+                except Exception as e:
+                    logger.warning(f"Failed to update K8s resources: {str(e)}")
+            
+            # For Docker deployments
+            elif agent.configuration.get('runtime_type') == 'docker':
+                container_id = agent.configuration.get('container_id')
+                if container_id:
+                    import subprocess
+                    # Update container resources
+                    subprocess.run([
+                        'docker', 'update',
+                        '--cpus', str(cpu_cores),
+                        '--memory', f"{memory_gb}g",
+                        container_id
+                    ], check=False)  # Don't fail if update fails
+            
+            # Update agent metadata
+            metadata = agent.state_metadata or {}
+            metadata.update({
+                'allocated_cpu': cpu_cores,
+                'allocated_memory': memory_gb,
+                'allocated_storage': storage_gb,
+                'resource_allocation_time': datetime.utcnow().isoformat()
+            })
+            agent.state_metadata = metadata
+            
+            logger.info(f"Allocated resources for agent {agent.id}: {cpu_cores} CPU, {memory_gb}GB RAM")
+            
+        except Exception as e:
+            logger.error(f"Resource allocation failed for agent {agent.id}: {str(e)}")
     
     def _save_state(self, agent: Agent):
         """Save agent state before pausing"""
         logger.info(f"Saving state for agent {agent.id}")
-        # TODO: Implement state persistence
+        
+        try:
+            # Create state snapshot
+            state_snapshot = {
+                'agent_id': str(agent.id),
+                'state': agent.state.value,
+                'timestamp': datetime.utcnow().isoformat(),
+                'configuration': agent.configuration,
+                'state_metadata': agent.state_metadata,
+                'performance_metrics': getattr(agent, 'performance_metrics', {}),
+                'conversation_history': getattr(agent, 'conversation_history', []),
+                'memory_state': {},
+                'checkpoint_info': {
+                    'version': '1.0',
+                    'created_by': 'state_machine',
+                    'reason': 'state_transition'
+                }
+            }
+            
+            # Save memory state if available
+            try:
+                if hasattr(agent, 'memory') and agent.memory:
+                    state_snapshot['memory_state'] = {
+                        'working_memory': getattr(agent.memory, 'working_memory', {}),
+                        'long_term_memory': getattr(agent.memory, 'long_term_memory', {}),
+                        'context_window': getattr(agent.memory, 'context_window', [])
+                    }
+            except Exception as e:
+                logger.warning(f"Failed to save memory state: {str(e)}")
+            
+            # Save process state if available
+            if hasattr(agent, 'process_id') and agent.process_id:
+                try:
+                    import psutil
+                    process = psutil.Process(agent.process_id)
+                    state_snapshot['process_info'] = {
+                        'pid': agent.process_id,
+                        'cpu_percent': process.cpu_percent(),
+                        'memory_info': process.memory_info()._asdict(),
+                        'status': process.status(),
+                        'create_time': process.create_time()
+                    }
+                except Exception as e:
+                    logger.warning(f"Failed to save process state: {str(e)}")
+            
+            # Choose storage location
+            storage_path = f"/data/agentvault/checkpoints/{agent.id}"
+            checkpoint_file = f"{storage_path}/state_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.json"
+            
+            # Ensure directory exists
+            import os
+            os.makedirs(storage_path, exist_ok=True)
+            
+            # Save to file
+            import json
+            with open(checkpoint_file, 'w') as f:
+                json.dump(state_snapshot, f, indent=2, default=str)
+            
+            # Update agent with checkpoint info
+            metadata = agent.state_metadata or {}
+            metadata.update({
+                'last_checkpoint': checkpoint_file,
+                'last_checkpoint_time': datetime.utcnow().isoformat(),
+                'checkpoint_version': '1.0'
+            })
+            agent.state_metadata = metadata
+            
+            # Keep only last 10 checkpoints to save space
+            import glob
+            checkpoints = sorted(glob.glob(f"{storage_path}/state_*.json"))
+            if len(checkpoints) > 10:
+                for old_checkpoint in checkpoints[:-10]:
+                    try:
+                        os.remove(old_checkpoint)
+                    except Exception as e:
+                        logger.warning(f"Failed to remove old checkpoint: {str(e)}")
+            
+            logger.info(f"State saved for agent {agent.id} to {checkpoint_file}")
+            
+        except Exception as e:
+            logger.error(f"State persistence failed for agent {agent.id}: {str(e)}")
+            # Don't raise - state saving shouldn't block transitions
+            pass
     
     def _prepare_maintenance(self, agent: Agent):
         """Prepare agent for maintenance"""
