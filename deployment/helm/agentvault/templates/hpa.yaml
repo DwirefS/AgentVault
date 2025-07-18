@@ -1,0 +1,250 @@
+{{/*
+AgentVault™ Horizontal Pod Autoscaler
+Dynamic scaling based on CPU, memory, and custom metrics
+Author: Dwiref Sharma
+Contact: DwirefS@SapientEdge.io
+*/}}
+
+{{- if .Values.autoscaling.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "agentvault.fullname" . }}
+  labels:
+    {{- include "agentvault.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "agentvault.fullname" . }}
+  minReplicas: {{ .Values.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.autoscaling.maxReplicas }}
+  metrics:
+    {{- if .Values.autoscaling.targetCPUUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.autoscaling.targetCPUUtilizationPercentage }}
+    {{- end }}
+    {{- if .Values.autoscaling.targetMemoryUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.autoscaling.targetMemoryUtilizationPercentage }}
+    {{- end }}
+    # Custom metrics for intelligent scaling
+    - type: Pods
+      pods:
+        metric:
+          name: agentvault_request_queue_length
+        target:
+          type: AverageValue
+          averageValue: "10"
+    - type: Pods
+      pods:
+        metric:
+          name: agentvault_cache_miss_rate
+        target:
+          type: AverageValue
+          averageValue: "0.2"
+    - type: Pods
+      pods:
+        metric:
+          name: agentvault_ml_inference_latency_seconds
+        target:
+          type: AverageValue
+          averageValue: "1.0"
+  {{- if .Values.autoscaling.behavior }}
+  behavior:
+    {{- toYaml .Values.autoscaling.behavior | nindent 4 }}
+  {{- end }}
+
+---
+{{- if .Values.orchestrator.enabled }}
+# Orchestrator HPA
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "agentvault.fullname" . }}-orchestrator
+  labels:
+    {{- include "agentvault.orchestrator.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "agentvault.fullname" . }}-orchestrator
+  minReplicas: {{ .Values.orchestrator.replicaCount | default 2 }}
+  maxReplicas: {{ mul (.Values.orchestrator.replicaCount | default 2) 3 }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+    # Orchestrator-specific metrics
+    - type: Pods
+      pods:
+        metric:
+          name: agentvault_routing_decisions_per_second
+        target:
+          type: AverageValue
+          averageValue: "100"
+    - type: Pods
+      pods:
+        metric:
+          name: agentvault_storage_tier_utilization
+        target:
+          type: AverageValue
+          averageValue: "0.8"
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 10
+        periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 30
+{{- end }}
+
+---
+{{- if .Values.mlServices.enabled }}
+# ML Services HPA (with GPU considerations)
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "agentvault.fullname" . }}-ml-services
+  labels:
+    {{- include "agentvault.mlservices.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "agentvault.fullname" . }}-ml-services
+  minReplicas: {{ .Values.mlServices.agentDna.replicaCount | default 2 }}
+  maxReplicas: {{ mul (.Values.mlServices.agentDna.replicaCount | default 2) 2 }}  # Conservative scaling for GPU workloads
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 60  # Lower threshold for GPU workloads
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 70
+    # ML-specific metrics
+    - type: Pods
+      pods:
+        metric:
+          name: agentvault_ml_inference_queue_length
+        target:
+          type: AverageValue
+          averageValue: "5"
+    - type: Pods
+      pods:
+        metric:
+          name: agentvault_ml_model_accuracy
+        target:
+          type: AverageValue
+          averageValue: "0.85"
+    - type: Pods
+      pods:
+        metric:
+          name: agentvault_gpu_utilization_percent
+        target:
+          type: AverageValue
+          averageValue: "80"
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 600  # Slower scale down for expensive GPU pods
+      policies:
+      - type: Percent
+        value: 5
+        periodSeconds: 120
+    scaleUp:
+      stabilizationWindowSeconds: 120
+      policies:
+      - type: Percent
+        value: 25
+        periodSeconds: 60
+{{- end }}
+
+---
+{{- if .Values.vectorDB.enabled }}
+# Vector Database HPA
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "agentvault.fullname" . }}-vector-db
+  labels:
+    {{- include "agentvault.vectordb.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "agentvault.fullname" . }}-vector-db
+  minReplicas: {{ .Values.vectorDB.faiss.replicaCount | default 2 }}
+  maxReplicas: {{ mul (.Values.vectorDB.faiss.replicaCount | default 2) 2 }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 75
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 85  # Higher memory threshold for vector operations
+    # Vector DB specific metrics
+    - type: Pods
+      pods:
+        metric:
+          name: agentvault_vector_search_latency_seconds
+        target:
+          type: AverageValue
+          averageValue: "0.1"
+    - type: Pods
+      pods:
+        metric:
+          name: agentvault_vector_index_utilization
+        target:
+          type: AverageValue
+          averageValue: "0.8"
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 10
+        periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 30
+{{- end }}
+
+{{- end }}

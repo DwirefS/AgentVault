@@ -1,0 +1,174 @@
+{{/*
+AgentVault™ Persistent Volume Claims
+Azure NetApp Files storage provisioning
+Author: Dwiref Sharma
+Contact: DwirefS@SapientEdge.io
+*/}}
+
+{{- if .Values.anf.enabled }}
+{{- range $tier, $config := .Values.anf.capacityPools }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "agentvault.anf.pvc" (list $ $tier) }}
+  labels:
+    {{- include "agentvault.labels" $ | nindent 4 }}
+    storage.tier: {{ $tier }}
+    storage.provider: "azure-netapp-files"
+  annotations:
+    volume.beta.kubernetes.io/storage-class: "azure-netapp-files-{{ $tier }}"
+    volume.kubernetes.io/storage-provisioner: "netapp.io/trident"
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: {{ $config.size }}
+  storageClassName: "azure-netapp-files-{{ $tier }}"
+  volumeMode: Filesystem
+{{- end }}
+
+---
+# Shared temporary storage for processing
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "agentvault.fullname" . }}-temp-storage
+  labels:
+    {{- include "agentvault.labels" . | nindent 4 }}
+    storage.type: "temporary"
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 100Gi
+  storageClassName: {{ .Values.global.storageClass | default "managed-csi" }}
+
+---
+# ML models storage
+{{- if .Values.mlServices.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "agentvault.fullname" . }}-ml-models
+  labels:
+    {{- include "agentvault.labels" . | nindent 4 }}
+    storage.type: "ml-models"
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 500Gi
+  storageClassName: {{ .Values.global.storageClass | default "managed-csi-premium" }}
+{{- end }}
+
+---
+# Vector database storage
+{{- if .Values.vectorDB.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "agentvault.fullname" . }}-vector-db
+  labels:
+    {{- include "agentvault.labels" . | nindent 4 }}
+    storage.type: "vector-database"
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.vectorDB.faiss.persistence.size | default "100Gi" }}
+  storageClassName: {{ .Values.vectorDB.faiss.persistence.storageClass | default "managed-csi-premium" }}
+{{- end }}
+
+{{- end }}
+
+---
+# Storage Classes for different ANF tiers
+{{- if .Values.anf.enabled }}
+{{- range $tier, $config := .Values.anf.capacityPools }}
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: "azure-netapp-files-{{ $tier }}"
+  labels:
+    {{- include "agentvault.labels" $ | nindent 4 }}
+provisioner: netapp.io/trident
+parameters:
+  backendType: "azure-netapp-files"
+  location: {{ $.Values.anf.location | quote }}
+  serviceLevel: {{ $config.serviceLevel | quote }}
+  capacityPool: {{ $config.name | quote }}
+  size: "100Gi"  # Minimum size
+  {{- if $.Values.anf.volumeDefaults.subnetId }}
+  subnetID: {{ $.Values.anf.volumeDefaults.subnetId | quote }}
+  {{- end }}
+  
+  # Performance settings based on tier
+  {{- if eq $tier "ultra" }}
+  # Ultra performance tier settings
+  qosType: {{ $config.qosType | default "Auto" | quote }}
+  throughputMibps: "128"
+  {{- else if eq $tier "premium" }}
+  # Premium performance tier settings
+  qosType: {{ $config.qosType | default "Auto" | quote }}
+  throughputMibps: "64"
+  {{- else if eq $tier "standard" }}
+  # Standard performance tier settings
+  qosType: {{ $config.qosType | default "Auto" | quote }}
+  throughputMibps: "16"
+  {{- else if eq $tier "cool" }}
+  # Cool storage tier settings
+  qosType: {{ $config.qosType | default "Manual" | quote }}
+  coolAccess: "true"
+  coolnessPeriod: "31"
+  {{- end }}
+  
+  # Export policy
+  exportPolicy: |
+    rules:
+      {{- range .Values.anf.volumeDefaults.exportPolicy.rules }}
+      - ruleIndex: {{ .ruleIndex }}
+        allowedClients: {{ .allowedClients | quote }}
+        protocols: {{- toYaml .protocols | nindent 10 }}
+        accessRights: {{- toYaml .accessRights | nindent 10 }}
+        rootAccess: {{ .rootAccess | default false }}
+        chownMode: {{ .chownMode | default "Restricted" | quote }}
+      {{- end }}
+  
+  # Snapshot policy
+  {{- if $.Values.anf.volumeDefaults.snapshotPolicy.enabled }}
+  snapshotPolicy: |
+    enabled: true
+    hourlySnapshots: {{ $.Values.anf.volumeDefaults.snapshotPolicy.hourlySnapshots | default 4 }}
+    dailySnapshots: {{ $.Values.anf.volumeDefaults.snapshotPolicy.dailySnapshots | default 7 }}
+    weeklySnapshots: {{ $.Values.anf.volumeDefaults.snapshotPolicy.weeklySnapshots | default 4 }}
+    monthlySnapshots: {{ $.Values.anf.volumeDefaults.snapshotPolicy.monthlySnapshots | default 3 }}
+  {{- end }}
+  
+  # Backup policy
+  backupPolicy: |
+    enabled: {{ $.Values.backup.enabled | default false }}
+    {{- if $.Values.backup.enabled }}
+    schedule: {{ $.Values.backup.schedule | quote }}
+    retention:
+      daily: 30
+      weekly: 12
+      monthly: 12
+      yearly: 5
+    {{- end }}
+  
+  # Cross-region replication
+  {{- if $.Values.anf.replication.enabled }}
+  replicationSchedule: {{ $.Values.anf.replication.schedule | default "daily" | quote }}
+  destinationRegion: {{ $.Values.anf.replication.destinationRegion | quote }}
+  {{- end }}
+
+allowVolumeExpansion: true
+reclaimPolicy: Retain
+volumeBindingMode: Immediate
+{{- end }}
+{{- end }}

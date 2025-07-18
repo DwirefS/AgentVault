@@ -1,0 +1,455 @@
+# AgentVault™ CI/CD Pipeline
+# Automated deployment pipeline for Azure AKS
+# Author: Dwiref Sharma
+# Contact: DwirefS@SapientEdge.io
+
+name: Deploy AgentVault
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+      - 'release/*'
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+  pull_request:
+    branches:
+      - main
+      - develop
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'development'
+        type: choice
+        options:
+          - development
+          - staging
+          - production
+      force_recreate:
+        description: 'Force recreate resources'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+  AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+  AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  REGISTRY_LOGIN_SERVER: agentvault.azurecr.io
+  REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+  REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+  KUBECONFIG: ${{ github.workspace }}/.kube/config
+
+jobs:
+  # Code quality and security checks
+  code-quality:
+    name: Code Quality & Security
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install bandit safety pytest-cov
+
+      - name: Run code quality checks
+        run: |
+          # Linting
+          python -m flake8 src/ --max-line-length=120 --extend-ignore=E203,W503
+          
+          # Type checking
+          python -m mypy src/ --ignore-missing-imports
+          
+          # Security scanning
+          bandit -r src/ -f json -o bandit-report.json
+          safety check --json --output safety-report.json
+
+      - name: Run tests with coverage
+        run: |
+          python -m pytest tests/ \
+            --cov=src \
+            --cov-report=xml \
+            --cov-report=html \
+            --cov-fail-under=80 \
+            --junitxml=test-results.xml
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: test-results
+          path: |
+            test-results.xml
+            htmlcov/
+            bandit-report.json
+            safety-report.json
+
+      - name: SonarCloud Scan
+        uses: SonarSource/sonarcloud-github-action@master
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+  # Determine target environment
+  environment-setup:
+    name: Environment Setup
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.env.outputs.environment }}
+      cluster_name: ${{ steps.env.outputs.cluster_name }}
+      resource_group: ${{ steps.env.outputs.resource_group }}
+      namespace: ${{ steps.env.outputs.namespace }}
+    steps:
+      - name: Determine environment
+        id: env
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            ENVIRONMENT="${{ github.event.inputs.environment }}"
+          elif [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            ENVIRONMENT="production"
+          elif [ "${{ github.ref }}" = "refs/heads/develop" ]; then
+            ENVIRONMENT="development"
+          elif [[ "${{ github.ref }}" =~ ^refs/heads/release/ ]]; then
+            ENVIRONMENT="staging"
+          else
+            ENVIRONMENT="development"
+          fi
+          
+          echo "environment=${ENVIRONMENT}" >> $GITHUB_OUTPUT
+          echo "cluster_name=agentvault-${ENVIRONMENT}-aks" >> $GITHUB_OUTPUT
+          echo "resource_group=agentvault-${ENVIRONMENT}-rg" >> $GITHUB_OUTPUT
+          echo "namespace=agentvault" >> $GITHUB_OUTPUT
+          
+          echo "Deploying to environment: ${ENVIRONMENT}"
+
+  # Build and push Docker images
+  build-images:
+    name: Build & Push Images
+    runs-on: ubuntu-latest
+    needs: [code-quality, environment-setup]
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tags }}
+      image_digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Azure Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY_LOGIN_SERVER }}
+          username: ${{ env.REGISTRY_USERNAME }}
+          password: ${{ env.REGISTRY_PASSWORD }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY_LOGIN_SERVER }}/agentvault/core
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=${{ needs.environment-setup.outputs.environment }}-latest
+
+      - name: Build and push core image
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./docker/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            BUILD_DATE=${{ github.event.head_commit.timestamp }}
+            VCS_REF=${{ github.sha }}
+            VERSION=${{ steps.meta.outputs.version }}
+
+      - name: Build orchestrator image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./docker/Dockerfile.orchestrator
+          push: true
+          tags: ${{ env.REGISTRY_LOGIN_SERVER }}/agentvault/orchestrator:${{ steps.meta.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build ML services image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./docker/Dockerfile.ml-services
+          push: true
+          tags: ${{ env.REGISTRY_LOGIN_SERVER }}/agentvault/ml-services:${{ steps.meta.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build vector database image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./docker/Dockerfile.vector-db
+          push: true
+          tags: ${{ env.REGISTRY_LOGIN_SERVER }}/agentvault/vector-db:${{ steps.meta.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Scan images for vulnerabilities
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.REGISTRY_LOGIN_SERVER }}/agentvault/core:${{ steps.meta.outputs.version }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Upload vulnerability scan results
+        uses: github/codeql-action/upload-sarif@v2
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+  # Deploy to Kubernetes
+  deploy:
+    name: Deploy to ${{ needs.environment-setup.outputs.environment }}
+    runs-on: ubuntu-latest
+    needs: [build-images, environment-setup]
+    environment:
+      name: ${{ needs.environment-setup.outputs.environment }}
+      url: https://agentvault-${{ needs.environment-setup.outputs.environment }}.yourdomain.com
+    concurrency:
+      group: deploy-${{ needs.environment-setup.outputs.environment }}
+      cancel-in-progress: false
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Azure CLI
+        uses: azure/login@v1
+        with:
+          creds: |
+            {
+              "clientId": "${{ env.AZURE_CLIENT_ID }}",
+              "clientSecret": "${{ env.AZURE_CLIENT_SECRET }}",
+              "subscriptionId": "${{ env.AZURE_SUBSCRIPTION_ID }}",
+              "tenantId": "${{ env.AZURE_TENANT_ID }}"
+            }
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.28.0'
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: 'v3.13.0'
+
+      - name: Get AKS credentials
+        run: |
+          az aks get-credentials \
+            --resource-group ${{ needs.environment-setup.outputs.resource_group }} \
+            --name ${{ needs.environment-setup.outputs.cluster_name }} \
+            --overwrite-existing \
+            --admin
+
+      - name: Create namespace and secrets
+        run: |
+          # Create namespace
+          kubectl create namespace ${{ needs.environment-setup.outputs.namespace }} --dry-run=client -o yaml | kubectl apply -f -
+          
+          # Create image pull secret
+          kubectl create secret docker-registry acr-secret \
+            --namespace=${{ needs.environment-setup.outputs.namespace }} \
+            --docker-server=${{ env.REGISTRY_LOGIN_SERVER }} \
+            --docker-username=${{ env.REGISTRY_USERNAME }} \
+            --docker-password=${{ env.REGISTRY_PASSWORD }} \
+            --dry-run=client -o yaml | kubectl apply -f -
+          
+          # Create application secrets (if they don't exist)
+          kubectl create secret generic agentvault-secrets \
+            --namespace=${{ needs.environment-setup.outputs.namespace }} \
+            --from-literal=postgres-username=agentvault \
+            --from-literal=postgres-password=${{ secrets.POSTGRES_PASSWORD }} \
+            --from-literal=redis-password=${{ secrets.REDIS_PASSWORD }} \
+            --from-literal=jwt-secret=${{ secrets.JWT_SECRET }} \
+            --from-literal=azure-client-id=${{ env.AZURE_CLIENT_ID }} \
+            --from-literal=azure-client-secret=${{ env.AZURE_CLIENT_SECRET }} \
+            --from-literal=azure-tenant-id=${{ env.AZURE_TENANT_ID }} \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Add Helm repositories
+        run: |
+          helm repo add bitnami https://charts.bitnami.com/bitnami
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo add grafana https://grafana.github.io/helm-charts
+          helm repo add jaegertracing https://jaegertracing.github.io/helm-charts
+          helm repo update
+
+      - name: Deploy AgentVault
+        run: |
+          # Extract image tag
+          IMAGE_TAG=$(echo "${{ needs.build-images.outputs.image_tag }}" | head -n1 | cut -d: -f2)
+          
+          # Build deployment command
+          HELM_ARGS=(
+            "upgrade" "--install" "agentvault"
+            "./deployment/helm/agentvault"
+            "--namespace" "${{ needs.environment-setup.outputs.namespace }}"
+            "--values" "./deployment/values/${{ needs.environment-setup.outputs.environment }}.yaml"
+            "--set" "image.tag=${IMAGE_TAG}"
+            "--set" "global.environment=${{ needs.environment-setup.outputs.environment }}"
+            "--timeout" "20m"
+            "--wait"
+            "--atomic"
+          )
+          
+          # Add force recreate if specified
+          if [ "${{ github.event.inputs.force_recreate }}" = "true" ]; then
+            HELM_ARGS+=("--force")
+          fi
+          
+          # Execute deployment
+          helm "${HELM_ARGS[@]}"
+
+      - name: Verify deployment
+        run: |
+          # Wait for rollout to complete
+          kubectl rollout status deployment/agentvault \
+            --namespace=${{ needs.environment-setup.outputs.namespace }} \
+            --timeout=300s
+          
+          # Check pod status
+          kubectl get pods --namespace=${{ needs.environment-setup.outputs.namespace }}
+          
+          # Run health check
+          kubectl wait --for=condition=ready pod \
+            --selector=app.kubernetes.io/name=agentvault \
+            --namespace=${{ needs.environment-setup.outputs.namespace }} \
+            --timeout=300s
+
+      - name: Run deployment tests
+        run: |
+          # Run smoke tests
+          kubectl run smoke-test \
+            --namespace=${{ needs.environment-setup.outputs.namespace }} \
+            --image=curlimages/curl:latest \
+            --rm -i --restart=Never \
+            -- sh -c "
+              curl -f http://agentvault:8080/health || exit 1
+              curl -f http://agentvault:8080/ready || exit 1
+              echo 'Health checks passed'
+            "
+
+      - name: Update deployment status
+        if: always()
+        run: |
+          # Get deployment status
+          STATUS=$(kubectl get deployment agentvault \
+            --namespace=${{ needs.environment-setup.outputs.namespace }} \
+            --output=jsonpath='{.status.conditions[?(@.type=="Available")].status}')
+          
+          if [ "$STATUS" = "True" ]; then
+            echo "✅ Deployment successful to ${{ needs.environment-setup.outputs.environment }}"
+          else
+            echo "❌ Deployment failed to ${{ needs.environment-setup.outputs.environment }}"
+            kubectl describe deployment agentvault --namespace=${{ needs.environment-setup.outputs.namespace }}
+            kubectl logs --selector=app.kubernetes.io/name=agentvault \
+              --namespace=${{ needs.environment-setup.outputs.namespace }} \
+              --tail=100
+            exit 1
+          fi
+
+  # Performance testing (for staging and production)
+  performance-test:
+    name: Performance Testing
+    runs-on: ubuntu-latest
+    needs: [deploy, environment-setup]
+    if: needs.environment-setup.outputs.environment != 'development'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run load tests
+        run: |
+          # Install k6
+          curl https://github.com/grafana/k6/releases/download/v0.46.0/k6-v0.46.0-linux-amd64.tar.gz -L | tar xvz --strip-components 1
+          
+          # Run performance tests
+          ./k6 run tests/performance/load-test.js \
+            --env BASE_URL=https://agentvault-${{ needs.environment-setup.outputs.environment }}.yourdomain.com \
+            --out json=load-test-results.json
+
+      - name: Upload performance results
+        uses: actions/upload-artifact@v3
+        with:
+          name: performance-results-${{ needs.environment-setup.outputs.environment }}
+          path: load-test-results.json
+
+  # Security testing
+  security-test:
+    name: Security Testing
+    runs-on: ubuntu-latest
+    needs: [deploy, environment-setup]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run OWASP ZAP scan
+        uses: zaproxy/action-full-scan@v0.7.0
+        with:
+          target: https://agentvault-${{ needs.environment-setup.outputs.environment }}.yourdomain.com
+          rules_file_name: .zap/rules.tsv
+          cmd_options: '-a'
+
+  # Notification
+  notify:
+    name: Notify Teams
+    runs-on: ubuntu-latest
+    needs: [deploy, environment-setup]
+    if: always()
+    steps:
+      - name: Notify deployment status
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          channel: '#deployments'
+          fields: repo,message,commit,author,action,eventName,ref,workflow
+          webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
+
+      - name: Create deployment summary
+        run: |
+          echo "## 🚀 AgentVault Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Environment:** ${{ needs.environment-setup.outputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Cluster:** ${{ needs.environment-setup.outputs.cluster_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Namespace:** ${{ needs.environment-setup.outputs.namespace }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Image:** ${{ needs.build-images.outputs.image_tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Status:** ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Access URL:** https://agentvault-${{ needs.environment-setup.outputs.environment }}.yourdomain.com" >> $GITHUB_STEP_SUMMARY

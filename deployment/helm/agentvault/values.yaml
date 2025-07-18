@@ -1,0 +1,658 @@
+# AgentVault™ Helm Chart Values
+# Production-ready configuration for enterprise deployment
+# Author: Dwiref Sharma
+# Contact: DwirefS@SapientEdge.io
+
+# Global configuration
+global:
+  imageRegistry: ""
+  imagePullSecrets: []
+  storageClass: "managed-csi"
+  
+replicaCount: 3
+
+image:
+  registry: agentvault.azurecr.io
+  repository: agentvault/core
+  tag: "v1.0.0"
+  pullPolicy: Always
+  pullSecrets: 
+    - name: acr-secret
+
+nameOverride: ""
+fullnameOverride: ""
+
+# Service account configuration
+serviceAccount:
+  create: true
+  annotations:
+    azure.workload.identity/client-id: ""
+  name: "agentvault"
+
+# Security context
+podSecurityContext:
+  fsGroup: 1000
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+    - ALL
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1000
+
+# Service configuration
+service:
+  type: ClusterIP
+  port: 8080
+  targetPort: 8080
+  annotations: {}
+
+# Ingress configuration
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+    nginx.ingress.kubernetes.io/rate-limit-window: "1m"
+  hosts:
+    - host: agentvault.yourdomain.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: agentvault-tls
+      hosts:
+        - agentvault.yourdomain.com
+
+# Resource configuration
+resources:
+  limits:
+    cpu: 2000m
+    memory: 4Gi
+    ephemeral-storage: 10Gi
+  requests:
+    cpu: 1000m
+    memory: 2Gi
+    ephemeral-storage: 5Gi
+
+# Autoscaling configuration
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 10
+        periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 30
+
+# Pod Disruption Budget
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+
+# Node selection
+nodeSelector: {}
+
+tolerations: []
+
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+    - weight: 100
+      podAffinityTerm:
+        labelSelector:
+          matchExpressions:
+          - key: app.kubernetes.io/name
+            operator: In
+            values:
+            - agentvault
+        topologyKey: kubernetes.io/hostname
+
+# Health checks
+livenessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 30
+  periodSeconds: 30
+  timeoutSeconds: 10
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /ready
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+startupProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 30
+
+# Environment configuration
+env:
+  LOG_LEVEL: "INFO"
+  ENVIRONMENT: "production"
+  
+envFrom:
+  - secretRef:
+      name: agentvault-secrets
+  - configMapRef:
+      name: agentvault-config
+
+# Azure NetApp Files configuration
+anf:
+  enabled: true
+  subscriptionId: ""
+  resourceGroup: ""
+  accountName: "agentvault-netapp"
+  location: "eastus"
+  
+  # Capacity pools configuration
+  capacityPools:
+    ultra:
+      name: "ultra-pool"
+      size: "10TiB"
+      serviceLevel: "Ultra"
+      qosType: "Auto"
+    premium:
+      name: "premium-pool"
+      size: "50TiB"
+      serviceLevel: "Premium"
+      qosType: "Auto"
+    standard:
+      name: "standard-pool"
+      size: "100TiB"
+      serviceLevel: "Standard"
+      qosType: "Auto"
+    cool:
+      name: "cool-pool"
+      size: "500TiB"
+      serviceLevel: "Standard"
+      qosType: "Manual"
+  
+  # Volume defaults
+  volumeDefaults:
+    subnetId: ""
+    protocols:
+      - "NFSv3"
+      - "NFSv4.1"
+    exportPolicy:
+      rules:
+        - ruleIndex: 1
+          allowedClients: "0.0.0.0/0"
+          protocols: ["NFSv3", "NFSv4.1"]
+          accessRights: ["Read", "Write"]
+    snapshotPolicy:
+      enabled: true
+      hourlySnapshots: 4
+      dailySnapshots: 7
+      weeklySnapshots: 4
+      monthlySnapshots: 3
+  
+  # Cross-region replication
+  replication:
+    enabled: true
+    destinationRegion: "westus2"
+    schedule: "daily"
+
+# Storage Orchestrator configuration
+orchestrator:
+  enabled: true
+  replicaCount: 2
+  
+  image:
+    repository: agentvault/orchestrator
+    tag: "v1.0.0"
+  
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 2Gi
+    requests:
+      cpu: 500m
+      memory: 1Gi
+  
+  config:
+    routingStrategy: "ml_optimized"
+    cacheEnabled: true
+    compressionEnabled: true
+    encryptionEnabled: true
+    
+    # ML optimization
+    mlOptimization:
+      enabled: true
+      modelUpdateInterval: "1h"
+      predictionThreshold: 0.8
+    
+    # Performance tuning
+    performance:
+      maxConcurrentRequests: 1000
+      requestTimeout: "30s"
+      connectionPoolSize: 100
+
+# Cache configuration (Redis Cluster)
+redis:
+  enabled: true
+  architecture: cluster
+  
+  cluster:
+    enabled: true
+    nodes: 6
+    replicas: 1
+  
+  auth:
+    enabled: true
+    password: ""
+    existingSecret: "redis-secret"
+    existingSecretPasswordKey: "password"
+  
+  master:
+    persistence:
+      enabled: true
+      size: 10Gi
+      storageClass: "managed-csi-premium"
+    
+    resources:
+      limits:
+        cpu: 1000m
+        memory: 2Gi
+      requests:
+        cpu: 500m
+        memory: 1Gi
+  
+  replica:
+    persistence:
+      enabled: true
+      size: 10Gi
+      storageClass: "managed-csi-premium"
+    
+    resources:
+      limits:
+        cpu: 500m
+        memory: 1Gi
+      requests:
+        cpu: 250m
+        memory: 512Mi
+
+# PostgreSQL configuration
+postgresql:
+  enabled: true
+  architecture: replication
+  
+  auth:
+    postgresPassword: ""
+    username: "agentvault"
+    password: ""
+    database: "agentvault"
+    existingSecret: "postgresql-secret"
+  
+  primary:
+    persistence:
+      enabled: true
+      size: 50Gi
+      storageClass: "managed-csi-premium"
+    
+    resources:
+      limits:
+        cpu: 2000m
+        memory: 4Gi
+      requests:
+        cpu: 1000m
+        memory: 2Gi
+    
+    extendedConfiguration: |
+      max_connections = 200
+      shared_buffers = 1GB
+      effective_cache_size = 3GB
+      maintenance_work_mem = 256MB
+      checkpoint_completion_target = 0.9
+      wal_buffers = 16MB
+      default_statistics_target = 100
+      random_page_cost = 1.1
+      effective_io_concurrency = 200
+      work_mem = 5242kB
+      min_wal_size = 1GB
+      max_wal_size = 4GB
+  
+  readReplicas:
+    replicaCount: 2
+    persistence:
+      enabled: true
+      size: 50Gi
+      storageClass: "managed-csi-premium"
+    
+    resources:
+      limits:
+        cpu: 1000m
+        memory: 2Gi
+      requests:
+        cpu: 500m
+        memory: 1Gi
+
+# ML Services configuration
+mlServices:
+  enabled: true
+  
+  agentDna:
+    enabled: true
+    replicaCount: 2
+    
+    image:
+      repository: agentvault/agent-dna
+      tag: "v1.0.0"
+    
+    resources:
+      limits:
+        cpu: 2000m
+        memory: 4Gi
+        nvidia.com/gpu: 1
+      requests:
+        cpu: 1000m
+        memory: 2Gi
+    
+    models:
+      lstm:
+        enabled: true
+        modelPath: "/models/lstm"
+      transformer:
+        enabled: true
+        modelPath: "/models/transformer"
+      autoencoder:
+        enabled: true
+        modelPath: "/models/autoencoder"
+  
+  cognitiveBalancer:
+    enabled: true
+    replicaCount: 2
+    
+    image:
+      repository: agentvault/cognitive-balancer
+      tag: "v1.0.0"
+    
+    resources:
+      limits:
+        cpu: 1000m
+        memory: 2Gi
+      requests:
+        cpu: 500m
+        memory: 1Gi
+
+# Vector Database configuration
+vectorDB:
+  enabled: true
+  type: "faiss"  # faiss, pinecone, weaviate
+  
+  faiss:
+    replicaCount: 2
+    
+    image:
+      repository: agentvault/vector-db
+      tag: "v1.0.0"
+    
+    persistence:
+      enabled: true
+      size: 100Gi
+      storageClass: "managed-csi-premium"
+    
+    resources:
+      limits:
+        cpu: 2000m
+        memory: 8Gi
+      requests:
+        cpu: 1000m
+        memory: 4Gi
+    
+    config:
+      indexType: "HNSW"
+      dimension: 1536
+      metric: "cosine"
+
+# Security configuration
+security:
+  enabled: true
+  
+  encryption:
+    enabled: true
+    provider: "azure-keyvault"
+    keyVaultName: ""
+    keyRotationInterval: "30d"
+  
+  authentication:
+    enabled: true
+    providers:
+      - "azure-ad"
+      - "oauth2"
+    
+    azureAD:
+      tenantId: ""
+      clientId: ""
+      clientSecret: ""
+  
+  authorization:
+    enabled: true
+    rbac: true
+    
+  networkPolicies:
+    enabled: true
+    
+  podSecurityPolicies:
+    enabled: true
+
+# Monitoring configuration
+monitoring:
+  enabled: true
+  
+  prometheus:
+    enabled: true
+    server:
+      persistentVolume:
+        enabled: true
+        size: 100Gi
+        storageClass: "managed-csi-premium"
+      
+      resources:
+        limits:
+          cpu: 2000m
+          memory: 4Gi
+        requests:
+          cpu: 1000m
+          memory: 2Gi
+    
+    alertmanager:
+      enabled: true
+      persistentVolume:
+        enabled: true
+        size: 10Gi
+        storageClass: "managed-csi-premium"
+  
+  grafana:
+    enabled: true
+    persistence:
+      enabled: true
+      size: 10Gi
+      storageClass: "managed-csi-premium"
+    
+    adminPassword: ""
+    
+    dashboardProviders:
+      dashboardproviders.yaml:
+        apiVersion: 1
+        providers:
+        - name: 'agentvault'
+          orgId: 1
+          folder: 'AgentVault'
+          type: file
+          disableDeletion: false
+          editable: true
+          options:
+            path: /var/lib/grafana/dashboards/agentvault
+    
+    resources:
+      limits:
+        cpu: 1000m
+        memory: 2Gi
+      requests:
+        cpu: 500m
+        memory: 1Gi
+  
+  jaeger:
+    enabled: true
+    storage:
+      type: elasticsearch
+    
+    elasticsearch:
+      replicas: 3
+      minimumMasterNodes: 2
+      
+      resources:
+        limits:
+          cpu: 1000m
+          memory: 2Gi
+        requests:
+          cpu: 500m
+          memory: 1Gi
+  
+  # Custom metrics
+  customMetrics:
+    enabled: true
+    exportInterval: "30s"
+    
+    azureMonitor:
+      enabled: true
+      workspaceId: ""
+      dataCollectionEndpoint: ""
+      dataCollectionRuleId: ""
+
+# Backup configuration
+backup:
+  enabled: true
+  schedule: "0 2 * * *"  # Daily at 2 AM
+  
+  destinations:
+    - type: "azure-blob"
+      storageAccount: ""
+      container: "agentvault-backups"
+      retentionDays: 30
+    
+    - type: "aws-s3"
+      bucket: "agentvault-backups"
+      region: "us-east-1"
+      retentionDays: 90
+  
+  encryption:
+    enabled: true
+    keySource: "azure-keyvault"
+
+# Migration configuration
+migration:
+  enabled: false
+  
+  jobs:
+    dataImport:
+      enabled: false
+      source: ""
+      batchSize: 1000
+      
+    schemaUpdate:
+      enabled: false
+      version: "v1.0.0"
+
+# Development configuration
+development:
+  enabled: false
+  
+  debug:
+    enabled: false
+    logLevel: "DEBUG"
+  
+  hotReload:
+    enabled: false
+  
+  testData:
+    enabled: false
+    generateSampleData: false
+
+# Configuration maps and secrets
+configMaps:
+  agentvault-config:
+    data:
+      REDIS_URL: "redis://redis-master:6379"
+      POSTGRES_URL: "postgresql://agentvault:password@postgresql:5432/agentvault"
+      ANF_ENDPOINT: "https://management.azure.com"
+      VECTOR_DB_URL: "http://vector-db:8080"
+      ML_SERVICES_URL: "http://ml-services:8080"
+
+secrets:
+  agentvault-secrets:
+    data: {}
+  
+  redis-secret:
+    data: {}
+  
+  postgresql-secret:
+    data: {}
+
+# Init containers
+initContainers:
+  - name: wait-for-dependencies
+    image: busybox:1.35
+    command: ['sh', '-c']
+    args:
+      - |
+        until nc -z redis-master 6379; do
+          echo "Waiting for Redis..."
+          sleep 2
+        done
+        until nc -z postgresql 5432; do
+          echo "Waiting for PostgreSQL..."
+          sleep 2
+        done
+        echo "Dependencies ready!"
+
+# Extra containers (sidecars)
+extraContainers: []
+
+# Extra volumes
+extraVolumes: []
+
+# Extra volume mounts
+extraVolumeMounts: []
+
+# Pod annotations
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "8080"
+  prometheus.io/path: "/metrics"
+
+# Pod labels
+podLabels:
+  app.kubernetes.io/component: "core"
+  app.kubernetes.io/part-of: "agentvault"

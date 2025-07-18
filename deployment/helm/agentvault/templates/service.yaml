@@ -1,0 +1,140 @@
+{{/*
+AgentVault™ Service Configuration
+Load balancer and service exposure for AgentVault components
+Author: Dwiref Sharma
+Contact: DwirefS@SapientEdge.io
+*/}}
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agentvault.fullname" . }}
+  labels:
+    {{- include "agentvault.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+    - port: 9090
+      targetPort: grpc
+      protocol: TCP
+      name: grpc
+    - port: 8081
+      targetPort: metrics
+      protocol: TCP
+      name: metrics
+  selector:
+    {{- include "agentvault.selectorLabels" . | nindent 4 }}
+
+---
+{{- if .Values.orchestrator.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agentvault.fullname" . }}-orchestrator
+  labels:
+    {{- include "agentvault.orchestrator.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8080
+      targetPort: http
+      protocol: TCP
+      name: http
+    - port: 9090
+      targetPort: grpc
+      protocol: TCP
+      name: grpc
+    - port: 8081
+      targetPort: metrics
+      protocol: TCP
+      name: metrics
+  selector:
+    {{- include "agentvault.orchestrator.selectorLabels" . | nindent 4 }}
+{{- end }}
+
+---
+{{- if .Values.mlServices.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agentvault.fullname" . }}-ml-services
+  labels:
+    {{- include "agentvault.mlservices.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8080
+      targetPort: http
+      protocol: TCP
+      name: http
+    - port: 9090
+      targetPort: grpc
+      protocol: TCP
+      name: grpc
+    - port: 8081
+      targetPort: metrics
+      protocol: TCP
+      name: metrics
+  selector:
+    {{- include "agentvault.mlservices.selectorLabels" . | nindent 4 }}
+{{- end }}
+
+---
+{{- if .Values.vectorDB.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agentvault.fullname" . }}-vector-db
+  labels:
+    {{- include "agentvault.vectordb.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8080
+      targetPort: http
+      protocol: TCP
+      name: http
+    - port: 9090
+      targetPort: grpc
+      protocol: TCP
+      name: grpc
+    - port: 8081
+      targetPort: metrics
+      protocol: TCP
+      name: metrics
+  selector:
+    {{- include "agentvault.vectordb.selectorLabels" . | nindent 4 }}
+{{- end }}
+
+---
+{{- if and .Values.service.type (eq .Values.service.type "LoadBalancer") }}
+# Headless service for StatefulSet discovery
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agentvault.fullname" . }}-headless
+  labels:
+    {{- include "agentvault.labels" . | nindent 4 }}
+    service.kubernetes.io/headless: "true"
+spec:
+  clusterIP: None
+  ports:
+    - port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+    - port: 9090
+      targetPort: grpc
+      protocol: TCP
+      name: grpc
+  selector:
+    {{- include "agentvault.selectorLabels" . | nindent 4 }}
+{{- end }}

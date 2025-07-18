@@ -1,0 +1,265 @@
+{{/*
+AgentVault™ ConfigMap
+Application configuration and environment variables
+Author: Dwiref Sharma
+Contact: DwirefS@SapientEdge.io
+*/}}
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "agentvault.fullname" . }}-config
+  labels:
+    {{- include "agentvault.labels" . | nindent 4 }}
+data:
+  # Core application configuration
+  config.yaml: |
+    server:
+      host: "0.0.0.0"
+      port: 8080
+      grpc_port: 9090
+      metrics_port: 8081
+      read_timeout: "30s"
+      write_timeout: "30s"
+      idle_timeout: "120s"
+      max_header_bytes: 1048576
+      
+    logging:
+      level: {{ .Values.env.LOG_LEVEL | default "INFO" | quote }}
+      format: "json"
+      output: "stdout"
+      
+    database:
+      url: {{ include "agentvault.postgresql.connectionString" . | quote }}
+      max_open_conns: 25
+      max_idle_conns: 10
+      conn_max_lifetime: "5m"
+      
+    cache:
+      url: {{ include "agentvault.redis.connectionString" . | quote }}
+      cluster_mode: {{ .Values.redis.cluster.enabled | default false }}
+      max_retries: 3
+      retry_delay: "100ms"
+      pool_size: 50
+      
+    storage:
+      provider: "azure-netapp-files"
+      {{- if .Values.anf.enabled }}
+      anf:
+        subscription_id: {{ .Values.anf.subscriptionId | quote }}
+        resource_group: {{ .Values.anf.resourceGroup | quote }}
+        account_name: {{ .Values.anf.accountName | quote }}
+        location: {{ .Values.anf.location | quote }}
+        capacity_pools:
+          {{- range $tier, $config := .Values.anf.capacityPools }}
+          {{ $tier }}:
+            name: {{ $config.name | quote }}
+            size: {{ $config.size | quote }}
+            service_level: {{ $config.serviceLevel | quote }}
+            qos_type: {{ $config.qosType | quote }}
+          {{- end }}
+      {{- end }}
+      
+    orchestrator:
+      enabled: {{ .Values.orchestrator.enabled | default false }}
+      routing_strategy: {{ .Values.orchestrator.config.routingStrategy | default "balanced" | quote }}
+      cache_enabled: {{ .Values.orchestrator.config.cacheEnabled | default true }}
+      compression_enabled: {{ .Values.orchestrator.config.compressionEnabled | default true }}
+      encryption_enabled: {{ .Values.orchestrator.config.encryptionEnabled | default true }}
+      max_concurrent_requests: {{ .Values.orchestrator.config.performance.maxConcurrentRequests | default 1000 }}
+      request_timeout: {{ .Values.orchestrator.config.performance.requestTimeout | default "30s" | quote }}
+      
+    ml_services:
+      enabled: {{ .Values.mlServices.enabled | default false }}
+      {{- if .Values.mlServices.agentDna.enabled }}
+      agent_dna:
+        enabled: true
+        models:
+          {{- range $model, $config := .Values.mlServices.agentDna.models }}
+          {{- if $config.enabled }}
+          {{ $model }}:
+            enabled: true
+            model_path: {{ $config.modelPath | quote }}
+          {{- end }}
+          {{- end }}
+      {{- end }}
+      
+    vector_db:
+      enabled: {{ .Values.vectorDB.enabled | default false }}
+      type: {{ .Values.vectorDB.type | default "faiss" | quote }}
+      {{- if eq .Values.vectorDB.type "faiss" }}
+      faiss:
+        index_type: {{ .Values.vectorDB.faiss.config.indexType | default "HNSW" | quote }}
+        dimension: {{ .Values.vectorDB.faiss.config.dimension | default 1536 }}
+        metric: {{ .Values.vectorDB.faiss.config.metric | default "cosine" | quote }}
+      {{- end }}
+      
+    security:
+      enabled: {{ .Values.security.enabled | default false }}
+      {{- if .Values.security.encryption.enabled }}
+      encryption:
+        enabled: true
+        provider: {{ .Values.security.encryption.provider | quote }}
+        key_vault_name: {{ .Values.security.encryption.keyVaultName | quote }}
+        key_rotation_interval: {{ .Values.security.encryption.keyRotationInterval | quote }}
+      {{- end }}
+      {{- if .Values.security.authentication.enabled }}
+      authentication:
+        enabled: true
+        providers: {{- toYaml .Values.security.authentication.providers | nindent 10 }}
+      {{- end }}
+      {{- if .Values.security.authorization.enabled }}
+      authorization:
+        enabled: true
+        rbac: {{ .Values.security.authorization.rbac | default true }}
+      {{- end }}
+      
+    monitoring:
+      enabled: {{ .Values.monitoring.enabled | default false }}
+      metrics_port: 8081
+      metrics_path: "/metrics"
+      {{- if .Values.monitoring.customMetrics.enabled }}
+      custom_metrics:
+        enabled: true
+        export_interval: {{ .Values.monitoring.customMetrics.exportInterval | default "30s" | quote }}
+        {{- if .Values.monitoring.customMetrics.azureMonitor.enabled }}
+        azure_monitor:
+          enabled: true
+          workspace_id: {{ .Values.monitoring.customMetrics.azureMonitor.workspaceId | quote }}
+          data_collection_endpoint: {{ .Values.monitoring.customMetrics.azureMonitor.dataCollectionEndpoint | quote }}
+          data_collection_rule_id: {{ .Values.monitoring.customMetrics.azureMonitor.dataCollectionRuleId | quote }}
+        {{- end }}
+      {{- end }}
+      
+    backup:
+      enabled: {{ .Values.backup.enabled | default false }}
+      schedule: {{ .Values.backup.schedule | default "0 2 * * *" | quote }}
+      {{- if .Values.backup.destinations }}
+      destinations:
+        {{- toYaml .Values.backup.destinations | nindent 8 }}
+      {{- end }}
+
+  # Feature flags
+  features.yaml: |
+    features:
+      storage_dna: true
+      neural_compression: true
+      cognitive_load_balancing: true
+      time_travel_debugging: true
+      quantum_ready_encryption: true
+      predictive_caching: true
+      adaptive_routing: true
+      ml_optimization: {{ .Values.orchestrator.config.mlOptimization.enabled | default false }}
+      advanced_monitoring: {{ .Values.monitoring.enabled | default false }}
+      backup_automation: {{ .Values.backup.enabled | default false }}
+
+  # Prometheus configuration
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+      
+    rule_files:
+      - "/etc/prometheus/rules/*.yml"
+      
+    scrape_configs:
+      - job_name: 'agentvault-core'
+        static_configs:
+          - targets: ['{{ include "agentvault.fullname" . }}:8081']
+        metrics_path: /metrics
+        scrape_interval: 15s
+        
+      {{- if .Values.orchestrator.enabled }}
+      - job_name: 'agentvault-orchestrator'
+        static_configs:
+          - targets: ['{{ include "agentvault.fullname" . }}-orchestrator:8081']
+        metrics_path: /metrics
+        scrape_interval: 15s
+      {{- end }}
+      
+      {{- if .Values.mlServices.enabled }}
+      - job_name: 'agentvault-ml-services'
+        static_configs:
+          - targets: ['{{ include "agentvault.fullname" . }}-ml-services:8081']
+        metrics_path: /metrics
+        scrape_interval: 15s
+      {{- end }}
+      
+      {{- if .Values.vectorDB.enabled }}
+      - job_name: 'agentvault-vector-db'
+        static_configs:
+          - targets: ['{{ include "agentvault.fullname" . }}-vector-db:8081']
+        metrics_path: /metrics
+        scrape_interval: 15s
+      {{- end }}
+
+  # Alert rules
+  alert-rules.yml: |
+    groups:
+      - name: agentvault.alerts
+        rules:
+          - alert: HighErrorRate
+            expr: rate(agentvault_requests_total{status="error"}[5m]) / rate(agentvault_requests_total[5m]) > 0.05
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "High error rate detected"
+              description: "Error rate is {{ $value | humanizePercentage }} for the last 5 minutes"
+              
+          - alert: HighLatency
+            expr: histogram_quantile(0.95, rate(agentvault_request_duration_seconds_bucket[5m])) > 1.0
+            for: 10m
+            labels:
+              severity: warning
+            annotations:
+              summary: "High request latency"
+              description: "95th percentile latency is {{ $value }}s"
+              
+          - alert: LowCacheHitRate
+            expr: agentvault_cache_hit_rate < 0.8
+            for: 15m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Low cache hit rate"
+              description: "Cache hit rate is {{ $value | humanizePercentage }}"
+              
+          - alert: StorageUsageHigh
+            expr: (agentvault_storage_usage_bytes / (1024^3)) > 1000
+            for: 5m
+            labels:
+              severity: critical
+            annotations:
+              summary: "High storage usage"
+              description: "Storage usage is {{ $value }}GB"
+              
+          - alert: MLModelAccuracyLow
+            expr: agentvault_ml_prediction_accuracy < 0.85
+            for: 30m
+            labels:
+              severity: warning
+            annotations:
+              summary: "ML model accuracy degraded"
+              description: "Model accuracy is {{ $value | humanizePercentage }}"
+              
+          - alert: PodCrashLooping
+            expr: rate(kube_pod_container_status_restarts_total[15m]) > 0
+            for: 5m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Pod is crash looping"
+              description: "Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} is restarting"
+
+---
+{{- range $name, $data := .Values.configMaps }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "agentvault.labels" $ | nindent 4 }}
+data:
+  {{- toYaml $data.data | nindent 2 }}
+{{- end }}

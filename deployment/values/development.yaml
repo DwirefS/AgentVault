@@ -1,0 +1,317 @@
+# AgentVault™ Development Environment Values
+# Optimized for local development and testing
+# Author: Dwiref Sharma
+# Contact: DwirefS@SapientEdge.io
+
+# Override global settings for development
+global:
+  environment: "development"
+  imageRegistry: "localhost:5000"
+  imagePullSecrets: []
+
+# Development image settings
+image:
+  registry: "localhost:5000"
+  repository: "agentvault/core"
+  tag: "dev-latest"
+  pullPolicy: Always
+
+# Reduced resource requirements for development
+replicaCount: 1
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 1Gi
+    ephemeral-storage: 5Gi
+  requests:
+    cpu: 250m
+    memory: 512Mi
+    ephemeral-storage: 2Gi
+
+# Disable autoscaling in development
+autoscaling:
+  enabled: false
+
+# Simple ingress for development
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+  hosts:
+    - host: agentvault-dev.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# Development ANF configuration (smaller sizes)
+anf:
+  enabled: false  # Use local storage for development
+  subscriptionId: "dev-subscription-id"
+  resourceGroup: "agentvault-dev-rg"
+  accountName: "agentvault-dev-netapp"
+  location: "eastus"
+  
+  capacityPools:
+    premium:
+      name: "dev-premium-pool"
+      size: "4TiB"
+      serviceLevel: "Premium"
+      qosType: "Auto"
+    standard:
+      name: "dev-standard-pool"
+      size: "10TiB"
+      serviceLevel: "Standard"
+      qosType: "Auto"
+
+# Simplified orchestrator for development
+orchestrator:
+  enabled: true
+  replicaCount: 1
+  
+  resources:
+    limits:
+      cpu: 250m
+      memory: 512Mi
+    requests:
+      cpu: 125m
+      memory: 256Mi
+  
+  config:
+    routingStrategy: "balanced"
+    cacheEnabled: true
+    compressionEnabled: false  # Disable for faster development
+    encryptionEnabled: false   # Disable for easier debugging
+    
+    performance:
+      maxConcurrentRequests: 100
+      requestTimeout: "30s"
+      connectionPoolSize: 10
+
+# Lightweight Redis for development
+redis:
+  enabled: true
+  architecture: standalone
+  
+  auth:
+    enabled: false  # Simplified for development
+  
+  master:
+    persistence:
+      enabled: false  # Use memory only for development
+    
+    resources:
+      limits:
+        cpu: 250m
+        memory: 512Mi
+      requests:
+        cpu: 125m
+        memory: 256Mi
+
+# Lightweight PostgreSQL for development
+postgresql:
+  enabled: true
+  architecture: standalone
+  
+  auth:
+    postgresPassword: "devpassword"
+    username: "agentvault"
+    password: "devpassword"
+    database: "agentvault"
+  
+  primary:
+    persistence:
+      enabled: false  # Use memory for development
+    
+    resources:
+      limits:
+        cpu: 250m
+        memory: 512Mi
+      requests:
+        cpu: 125m
+        memory: 256Mi
+
+# Simplified ML services for development
+mlServices:
+  enabled: true
+  
+  agentDna:
+    enabled: true
+    replicaCount: 1
+    
+    resources:
+      limits:
+        cpu: 500m
+        memory: 1Gi
+        # No GPU requirement for development
+      requests:
+        cpu: 250m
+        memory: 512Mi
+    
+    models:
+      lstm:
+        enabled: false  # Disable heavy models for development
+      transformer:
+        enabled: false
+      autoencoder:
+        enabled: true
+        modelPath: "/models/simple-autoencoder"
+  
+  cognitiveBalancer:
+    enabled: true
+    replicaCount: 1
+    
+    resources:
+      limits:
+        cpu: 250m
+        memory: 512Mi
+      requests:
+        cpu: 125m
+        memory: 256Mi
+
+# Simple vector database for development
+vectorDB:
+  enabled: true
+  type: "faiss"
+  
+  faiss:
+    replicaCount: 1
+    
+    persistence:
+      enabled: false  # Use memory for development
+    
+    resources:
+      limits:
+        cpu: 500m
+        memory: 1Gi
+      requests:
+        cpu: 250m
+        memory: 512Mi
+    
+    config:
+      indexType: "Flat"  # Simple index for development
+      dimension: 768     # Smaller dimension for faster processing
+      metric: "cosine"
+
+# Minimal security for development
+security:
+  enabled: false  # Simplified for development
+  
+  networkPolicies:
+    enabled: false
+  
+  podSecurityPolicies:
+    enabled: false
+
+# Basic monitoring for development
+monitoring:
+  enabled: true
+  
+  prometheus:
+    enabled: true
+    server:
+      persistentVolume:
+        enabled: false
+      
+      resources:
+        limits:
+          cpu: 250m
+          memory: 512Mi
+        requests:
+          cpu: 125m
+          memory: 256Mi
+    
+    alertmanager:
+      enabled: false  # Disable alerts for development
+  
+  grafana:
+    enabled: true
+    persistence:
+      enabled: false
+    
+    adminPassword: "admin"
+    
+    resources:
+      limits:
+        cpu: 250m
+        memory: 512Mi
+      requests:
+        cpu: 125m
+        memory: 256Mi
+  
+  jaeger:
+    enabled: false  # Disable tracing for development
+  
+  customMetrics:
+    enabled: true
+    exportInterval: "60s"
+    
+    azureMonitor:
+      enabled: false  # Disable Azure Monitor for local development
+
+# Disable backup for development
+backup:
+  enabled: false
+
+# Development-specific environment variables
+env:
+  LOG_LEVEL: "DEBUG"
+  ENVIRONMENT: "development"
+  ENABLE_DEBUG_ENDPOINTS: "true"
+  DISABLE_AUTH: "true"
+  MOCK_EXTERNAL_SERVICES: "true"
+
+# Development configuration maps
+configMaps:
+  agentvault-dev-config:
+    data:
+      FEATURE_FLAGS: |
+        {
+          "enable_debug_mode": true,
+          "mock_ml_services": true,
+          "skip_encryption": true,
+          "enable_test_endpoints": true
+        }
+
+# Development health checks (more lenient)
+livenessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 30
+  timeoutSeconds: 5
+  failureThreshold: 5
+
+readinessProbe:
+  httpGet:
+    path: /ready
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 5
+
+startupProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 20
+
+# Pod disruption budget (disabled for development)
+podDisruptionBudget:
+  enabled: false
+
+# Development-specific pod annotations
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "8080"
+  prometheus.io/path: "/metrics"
+  development.agentvault.io/hot-reload: "true"
+  development.agentvault.io/debug: "true"
